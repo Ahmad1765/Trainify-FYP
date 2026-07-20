@@ -4,8 +4,9 @@ import { toast } from "@/components/ui/use-toast";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Eye, EyeOff, ArrowLeft } from "lucide-react";
+import { Eye, EyeOff } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
+import AuthShell from "@/components/auth/AuthShell";
 
 const LoginPage = () => {
   const [email, setEmail] = useState("");
@@ -98,99 +99,77 @@ const LoginPage = () => {
   };
 
   return (
-    <div className="min-h-screen bg-fitness-background flex items-center justify-center">
-      <div className="w-full max-w-md p-8 bg-fitness-card-bg rounded-2xl shadow-xl">
-        <div className="mb-6">
-          <Link to="/" className="text-fitness-gray hover:text-fitness-green flex items-center">
-            <ArrowLeft className="h-4 w-4 mr-2" />
-            Back to home
-          </Link>
-        </div>
-
-        <div className="text-center mb-8">
-          <h2 className="text-2xl font-bold text-white">
-            Welcome to <span className="text-fitness-green">TRAIN</span>
-            <span>ify</span>
-          </h2>
-          <p className="text-fitness-gray mt-2">Log in to continue your fitness journey</p>
-        </div>
-
-        <form onSubmit={handleLogin} className="space-y-4">
-          <div className="space-y-2">
-            <Label htmlFor="email">Email</Label>
-            <Input
-              id="email"
-              type="email"
-              placeholder="your@email.com"
-              required
-              className="bg-fitness-dark-gray border-fitness-dark-gray text-white"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              disabled={isLoading}
-            />
-          </div>
-
-          <div className="space-y-2">
-            <div className="flex justify-between">
-              <Label htmlFor="password">Password</Label>
-              <button
-                type="button"
-                onClick={handleForgotPassword}
-                className="text-xs text-fitness-green hover:underline"
-                disabled={isLoading}
-              >
-                Forgot password?
-              </button>
-            </div>
-            <div className="relative">
-              <Input
-                id="password"
-                type={showPassword ? "text" : "password"}
-                placeholder="••••••••"
-                required
-                className="bg-fitness-dark-gray border-fitness-dark-gray text-white pr-10"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                disabled={isLoading}
-              />
-              <button
-                type="button"
-                className="absolute right-3 top-1/2 transform -translate-y-1/2 text-fitness-gray"
-                onClick={() => setShowPassword(!showPassword)}
-                disabled={isLoading}
-              >
-                {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
-              </button>
-            </div>
-          </div>
-
-          <Button
-            type="submit"
+    <AuthShell
+      title="Welcome back"
+      subtitle="Log in to continue your fitness journey."
+    >
+      <form onSubmit={handleLogin} className="space-y-5">
+        <div className="space-y-2">
+          <Label htmlFor="email">Email</Label>
+          <Input
+            id="email"
+            type="email"
+            placeholder="your@email.com"
+            required
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
             disabled={isLoading}
-            className="w-full bg-fitness-green hover:bg-fitness-green/80 text-black font-semibold py-6"
-          >
-            {isLoading ? "Logging in..." : "Log In"}
-          </Button>
-        </form>
-
-        <div className="mt-6 text-center">
-          <p className="text-fitness-gray">
-            Don't have an account?{" "}
-            <Link to="/register" className="text-fitness-green hover:underline">
-              Sign up
-            </Link>
-          </p>
+          />
         </div>
 
-        <div className="mt-8 pt-6 border-t border-fitness-dark-gray">
-          <div className="flex justify-center">
-            <Button
-              variant="outline"
-              className="w-full border-fitness-dark-gray text-white hover:bg-fitness-dark-gray"
-              onClick={handleGoogleLogin}
+        <div className="space-y-2">
+          <div className="flex justify-between">
+            <Label htmlFor="password">Password</Label>
+            <button
+              type="button"
+              onClick={handleForgotPassword}
+              className="text-xs font-medium text-fitness-green hover:underline"
               disabled={isLoading}
             >
-              <svg className="w-5 h-5 mr-2" viewBox="0 0 24 24">
+              Forgot password?
+            </button>
+          </div>
+          <div className="relative">
+            <Input
+              id="password"
+              type={showPassword ? "text" : "password"}
+              placeholder="••••••••"
+              required
+              className="pr-10"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              disabled={isLoading}
+            />
+            <button
+              type="button"
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-fitness-gray transition-colors hover:text-white"
+              onClick={() => setShowPassword(!showPassword)}
+              disabled={isLoading}
+            >
+              {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+            </button>
+          </div>
+        </div>
+
+        <Button type="submit" size="lg" disabled={isLoading} className="w-full">
+          {isLoading ? "Logging in..." : "Log In"}
+        </Button>
+      </form>
+
+      <div className="my-6 flex items-center gap-4">
+        <span className="h-px flex-1 bg-border" />
+        <span className="text-xs uppercase tracking-wider text-fitness-gray">or</span>
+        <span className="h-px flex-1 bg-border" />
+      </div>
+
+      <Button
+        variant="outline"
+        size="lg"
+        className="w-full"
+        onClick={handleGoogleLogin}
+        disabled={isLoading}
+      >
+        <svg className="w-5 h-5 mr-2" viewBox="0 0 24 24">
                 <path
                   d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
                   fill="#4285F4"
@@ -209,12 +188,16 @@ const LoginPage = () => {
                 />
                 <path d="M1 1h22v22H1z" fill="none" />
               </svg>
-              Continue with Google
-            </Button>
-          </div>
-        </div>
-      </div>
-    </div>
+        Continue with Google
+      </Button>
+
+      <p className="mt-8 text-center text-sm text-fitness-gray">
+        Don't have an account?{" "}
+        <Link to="/register" className="font-medium text-fitness-green hover:underline">
+          Sign up
+        </Link>
+      </p>
+    </AuthShell>
   );
 };
 

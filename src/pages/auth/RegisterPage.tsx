@@ -5,10 +5,11 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { toast } from "@/components/ui/use-toast";
-import { Eye, EyeOff, ArrowLeft, Check } from "lucide-react";
+import { Eye, EyeOff, Check } from "lucide-react";
 import { FcGoogle } from "react-icons/fc";
 
 import { useAuth } from "@/contexts/AuthContext";
+import AuthShell from "@/components/auth/AuthShell";
 
 const RegisterPage = () => {
   const [name, setName] = useState("");
@@ -124,31 +125,18 @@ const RegisterPage = () => {
   };
 
   return (
-    <div className="min-h-screen bg-fitness-background flex items-center justify-center py-12 px-4 sm:px-6 lg:px-8">
-      <div className="w-full max-w-md p-8 bg-fitness-card-bg rounded-2xl shadow-xl">
-        <div className="mb-6">
-          <Link to="/" className="text-fitness-gray hover:text-fitness-green flex items-center">
-            <ArrowLeft className="h-4 w-4 mr-2" />
-            Back to home
-          </Link>
-        </div>
-
-        <div className="text-center mb-8">
-          <h2 className="text-2xl font-bold text-white">
-            Join <span className="text-fitness-green">TRAIN</span>ify
-          </h2>
-          <p className="text-fitness-gray mt-2">Start your fitness journey today</p>
-        </div>
-
-        <form onSubmit={handleRegister} className="space-y-4">
+    <AuthShell
+      title="Create your account"
+      subtitle="Start your fitness journey today."
+    >
+      <form onSubmit={handleRegister} className="space-y-5">
           <div className="space-y-2">
             <Label htmlFor="name">Full Name</Label>
             <Input
               id="name"
               type="text"
-              placeholder="John Doe"
+              placeholder="Jordan Rivera"
               required
-              className="bg-fitness-dark-gray border-fitness-dark-gray text-white"
               value={name}
               onChange={(e) => setName(e.target.value)}
               disabled={isLoading}
@@ -162,7 +150,6 @@ const RegisterPage = () => {
               type="email"
               placeholder="you@example.com"
               required
-              className="bg-fitness-dark-gray border-fitness-dark-gray text-white"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               disabled={isLoading}
@@ -177,14 +164,14 @@ const RegisterPage = () => {
                 type={showPassword ? "text" : "password"}
                 placeholder="••••••••"
                 required
-                className="bg-fitness-dark-gray border-fitness-dark-gray text-white pr-10"
+                className="pr-10"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 disabled={isLoading}
               />
               <button
                 type="button"
-                className="absolute right-3 top-1/2 transform -translate-y-1/2 text-fitness-gray"
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-fitness-gray transition-colors hover:text-white"
                 onClick={() => setShowPassword(!showPassword)}
                 disabled={isLoading}
               >
@@ -238,35 +225,34 @@ const RegisterPage = () => {
             </label>
           </div>
 
-          <Button
-            type="submit"
-            disabled={isLoading}
-            className="w-full bg-fitness-green hover:bg-fitness-green/80 text-black font-semibold py-6"
-          >
+          <Button type="submit" size="lg" disabled={isLoading} className="w-full">
             {isLoading ? "Creating account..." : "Sign Up"}
           </Button>
         </form>
 
-        <div className="my-4 text-center text-fitness-gray">or</div>
+        <div className="my-6 flex items-center gap-4">
+          <span className="h-px flex-1 bg-border" />
+          <span className="text-xs uppercase tracking-wider text-fitness-gray">or</span>
+          <span className="h-px flex-1 bg-border" />
+        </div>
 
         <Button
           type="button"
+          variant="outline"
+          size="lg"
           onClick={handleGoogleSignIn}
           disabled={isLoading}
-          className="w-full flex items-center justify-center gap-2 bg-white text-black hover:bg-gray-100 font-semibold py-6"
+          className="w-full"
         >
           <FcGoogle size={20} />
           Continue with Google
         </Button>
 
-        <div className="mt-6 text-center">
-          <p className="text-fitness-gray">
-            Already have an account?{" "}
-            <Link to="/login" className="text-fitness-green hover:underline">Log in</Link>
-          </p>
-        </div>
-      </div>
-    </div>
+        <p className="mt-8 text-center text-sm text-fitness-gray">
+          Already have an account?{" "}
+          <Link to="/login" className="font-medium text-fitness-green hover:underline">Log in</Link>
+        </p>
+    </AuthShell>
   );
 };
 

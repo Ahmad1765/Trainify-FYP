@@ -144,7 +144,7 @@ const Profile = () => {
       <div className="space-y-6">
         <div className="flex flex-col md:flex-row justify-between items-start md:items-center">
           <div>
-            <h1 className="text-3xl font-bold">My Profile</h1>
+            <h1 className="text-display-md">My Profile</h1>
             <p className="text-fitness-gray mt-1">
               Manage your account settings and view your progress
             </p>
@@ -496,22 +496,22 @@ const Profile = () => {
                 <CardContent className="space-y-6">
                   <div className="grid grid-cols-2 gap-4">
                     <div className="bg-fitness-dark-gray p-4 rounded-lg text-center">
-                      <div className="text-3xl font-bold">{stats.workoutsCompleted}</div>
+                      <div className="text-display-md">{stats.workoutsCompleted}</div>
                       <div className="text-xs text-fitness-gray mt-1">Workouts Completed</div>
                     </div>
                     
                     <div className="bg-fitness-dark-gray p-4 rounded-lg text-center">
-                      <div className="text-3xl font-bold">{stats.totalWorkoutTime}</div>
+                      <div className="text-display-md">{stats.totalWorkoutTime}</div>
                       <div className="text-xs text-fitness-gray mt-1">Total Workout Time</div>
                     </div>
                     
                     <div className="bg-fitness-dark-gray p-4 rounded-lg text-center">
-                      <div className="text-3xl font-bold">{stats.currentStreak}</div>
+                      <div className="text-display-md">{stats.currentStreak}</div>
                       <div className="text-xs text-fitness-gray mt-1">Current Streak</div>
                     </div>
                     
                     <div className="bg-fitness-dark-gray p-4 rounded-lg text-center">
-                      <div className="text-3xl font-bold">{stats.longestStreak}</div>
+                      <div className="text-display-md">{stats.longestStreak}</div>
                       <div className="text-xs text-fitness-gray mt-1">Longest Streak</div>
                     </div>
                   </div>

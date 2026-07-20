@@ -1151,7 +1151,7 @@ const LiveWorkoutTracker = () => {
       <div className="space-y-6">
         <div className="flex flex-col md:flex-row justify-between items-start md:items-center">
           <div>
-            <h1 className="text-3xl font-bold">Live Workout Tracker</h1>
+            <h1 className="text-display-md">Live Workout Tracker</h1>
             <p className="text-fitness-gray mt-1">
               AI-powered form detection and rep counting
             </p>
@@ -1226,34 +1226,53 @@ const LiveWorkoutTracker = () => {
                       ref={canvasRef}
                       className="absolute top-0 left-0 w-full h-full"
                     />
-                    
-                    {/* Overlay for form feedback */}
+
+                    {/* HUD corner frame (decorative) */}
+                    <div className="pointer-events-none absolute inset-3">
+                      <span className="absolute left-0 top-0 h-6 w-6 rounded-tl-lg border-l-2 border-t-2 border-fitness-green/60" />
+                      <span className="absolute right-0 top-0 h-6 w-6 rounded-tr-lg border-r-2 border-t-2 border-fitness-green/60" />
+                      <span className="absolute bottom-0 left-0 h-6 w-6 rounded-bl-lg border-b-2 border-l-2 border-fitness-green/60" />
+                      <span className="absolute bottom-0 right-0 h-6 w-6 rounded-br-lg border-b-2 border-r-2 border-fitness-green/60" />
+                    </div>
+
+                    {/* LIVE indicator */}
+                    <div className="absolute left-4 top-4 flex items-center gap-2 rounded-lg border border-white/10 bg-fitness-black/70 px-2.5 py-1 text-xs font-semibold uppercase tracking-wider text-white backdrop-blur">
+                      <span className="relative flex h-2 w-2">
+                        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-fitness-error opacity-75" />
+                        <span className="relative inline-flex h-2 w-2 rounded-full bg-fitness-error" />
+                      </span>
+                      Live
+                    </div>
+
+                    {/* Form feedback */}
                     {isGoodForm !== null && (
-                      <div className={`absolute top-4 right-4 p-2 rounded-lg ${
-                          isGoodForm ? 'bg-fitness-success/20' : 'bg-fitness-error/20'
+                      <div className={`absolute right-4 top-4 flex items-center gap-2 rounded-lg border px-3 py-1.5 text-sm font-semibold backdrop-blur ${
+                          isGoodForm
+                            ? 'border-fitness-success/40 bg-fitness-success/15 text-fitness-success'
+                            : 'border-fitness-error/40 bg-fitness-error/15 text-fitness-error'
                         }`}
                       >
                         {isGoodForm ? (
-                          <div className="flex items-center text-fitness-success">
-                            <CheckCircle2 className="h-5 w-5 mr-2" />
-                            <span className="font-medium">Good Form</span>
-                          </div>
+                          <>
+                            <CheckCircle2 className="h-4 w-4" />
+                            Good Form
+                          </>
                         ) : (
-                          <div className="flex items-center text-fitness-error">
-                            <XCircle className="h-5 w-5 mr-2" />
-                            <span className="font-medium">Adjust Form</span>
-                          </div>
+                          <>
+                            <XCircle className="h-4 w-4" />
+                            Adjust Form
+                          </>
                         )}
                       </div>
                     )}
-                    
-                    {/* Rep counter */}
-                    <div className="absolute bottom-4 left-4 bg-fitness-black/80 p-3 rounded-lg">
-                      <div className="text-3xl font-bold text-fitness-green">
+
+                    {/* Rep counter HUD */}
+                    <div className="absolute bottom-4 left-4 rounded-xl border border-white/10 bg-fitness-black/80 px-4 py-2.5 backdrop-blur">
+                      <div className="text-4xl font-extrabold leading-none text-fitness-green tabular-nums">
                         {repCount}
                       </div>
-                      <div className="text-xs text-fitness-gray">
-                        REPS
+                      <div className="mt-1 text-[10px] font-semibold uppercase tracking-widest text-fitness-gray">
+                        Reps · {selectedWorkout.name}
                       </div>
                     </div>
                     

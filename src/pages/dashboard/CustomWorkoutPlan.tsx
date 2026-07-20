@@ -262,7 +262,7 @@ const CustomWorkoutPlan = () => {
       <div className="space-y-6">
         <div className="flex flex-col md:flex-row justify-between items-start md:items-center">
           <div>
-            <h1 className="text-3xl font-bold">Custom Workout Plan</h1>
+            <h1 className="text-display-md">Custom Workout Plan</h1>
             <p className="text-fitness-gray mt-1">
               Create a personalized workout plan tailored to your goals
             </p>
@@ -270,35 +270,37 @@ const CustomWorkoutPlan = () => {
         </div>
 
         {/* Progress Steps */}
-        <div className="flex justify-between relative mb-8">
-          <div className="absolute top-1/2 left-0 right-0 h-1 bg-fitness-dark-gray -translate-y-1/2 z-0"></div>
-          
-          <div className="relative z-10 flex flex-col items-center">
-            <div className={`h-10 w-10 rounded-full flex items-center justify-center ${
-              step >= 1 ? "bg-fitness-green text-black" : "bg-fitness-dark-gray text-white"
-            }`}>
-              {step > 1 ? <Check className="h-5 w-5" /> : 1}
+        <div className="relative mb-10 flex justify-between">
+          <div className="absolute left-0 right-0 top-5 z-0 h-0.5 -translate-y-1/2 bg-fitness-dark-gray" />
+          <div
+            className="absolute left-0 top-5 z-0 h-0.5 -translate-y-1/2 bg-fitness-green transition-all duration-500"
+            style={{ width: `${((Math.min(step, 3) - 1) / 2) * 100}%` }}
+          />
+
+          {[
+            { n: 1, label: "Goals & Preferences" },
+            { n: 2, label: "Equipment & Level" },
+            { n: 3, label: "Your Plan" },
+          ].map((s) => (
+            <div key={s.n} className="relative z-10 flex flex-col items-center">
+              <div
+                className={`flex h-10 w-10 items-center justify-center rounded-full border-2 text-sm font-semibold transition-all duration-300 ${
+                  step > s.n
+                    ? "border-fitness-green bg-fitness-green text-black"
+                    : step === s.n
+                    ? "border-fitness-green bg-fitness-green text-black shadow-glow-sm"
+                    : "border-fitness-dark-gray bg-fitness-background text-fitness-gray"
+                }`}
+              >
+                {step > s.n ? <Check className="h-5 w-5" /> : s.n}
+              </div>
+              <span
+                className={`mt-2 text-xs ${step >= s.n ? "text-white" : "text-fitness-gray"}`}
+              >
+                {s.label}
+              </span>
             </div>
-            <span className="text-xs mt-2">Goals & Preferences</span>
-          </div>
-          
-          <div className="relative z-10 flex flex-col items-center">
-            <div className={`h-10 w-10 rounded-full flex items-center justify-center ${
-              step >= 2 ? "bg-fitness-green text-black" : "bg-fitness-dark-gray text-white"
-            }`}>
-              {step > 2 ? <Check className="h-5 w-5" /> : 2}
-            </div>
-            <span className="text-xs mt-2">Equipment & Level</span>
-          </div>
-          
-          <div className="relative z-10 flex flex-col items-center">
-            <div className={`h-10 w-10 rounded-full flex items-center justify-center ${
-              step >= 3 ? "bg-fitness-green text-black" : "bg-fitness-dark-gray text-white"
-            }`}>
-              3
-            </div>
-            <span className="text-xs mt-2">Your Plan</span>
-          </div>
+          ))}
         </div>
 
         {/* Step 1: Goals and Preferences */}

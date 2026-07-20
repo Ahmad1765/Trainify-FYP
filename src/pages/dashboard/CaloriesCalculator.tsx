@@ -137,7 +137,7 @@ const CaloriesCalculator = () => {
       <div className="space-y-6">
         <div className="flex flex-col md:flex-row justify-between items-start md:items-center">
           <div>
-            <h1 className="text-3xl font-bold">Calories Calculator</h1>
+            <h1 className="text-display-md">Calories Calculator</h1>
             <p className="text-fitness-gray mt-1">
               Calculate your daily calorie needs based on your stats and goals
             </p>
