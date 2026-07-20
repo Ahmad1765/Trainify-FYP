@@ -38,7 +38,39 @@ export async function signIn(email: string, password: string) {
   if (error) rethrow(error);
 }
 
+/**
+ * Which social providers the project has enabled, fetched once and cached.
+ *
+ * signInWithOAuth does NOT error when a provider is disabled — it returns a
+ * redirect URL, and the browser lands on Supabase's /authorize endpoint which
+ * renders a raw JSON error page. Checking first turns that dead end into a
+ * clear message and keeps the user in the app.
+ */
+let enabledProvidersPromise: Promise<Record<string, boolean>> | null = null;
+
+async function isProviderEnabled(provider: string): Promise<boolean> {
+  if (!enabledProvidersPromise) {
+    const url = import.meta.env.VITE_SUPABASE_URL;
+    const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+    enabledProvidersPromise = fetch(`${url}/auth/v1/settings`, {
+      headers: { apikey: anonKey },
+    })
+      .then((r) => r.json())
+      .then((s) => s?.external ?? {})
+      .catch(() => ({})); // network failure: don't block the attempt
+  }
+  const external = await enabledProvidersPromise;
+  // Empty map (fetch failed) → assume enabled and let the real flow decide.
+  return Object.keys(external).length === 0 ? true : external[provider] === true;
+}
+
 export async function signInWithGoogle() {
+  if (!(await isProviderEnabled('google'))) {
+    throw new Error(
+      'Google sign-in is not enabled for this app yet. Please use email and password.',
+    );
+  }
+
   const { error } = await supabase.auth.signInWithOAuth({
     provider: 'google',
     options: { redirectTo: `${window.location.origin}/dashboard` },

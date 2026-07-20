@@ -8,10 +8,30 @@ import type { AuthError } from '@supabase/supabase-js';
  * reset or profile update. The fallback here is deliberately generic.
  */
 export function getAuthErrorMessage(error: unknown): string {
-  const code =
+  let code =
     (error as AuthError | undefined)?.code ??
     (error as { error_code?: string } | undefined)?.error_code;
-  const message = (error as { message?: string } | undefined)?.message ?? '';
+  let message = (error as { message?: string } | undefined)?.message ?? '';
+
+  // Some auth endpoints surface the raw JSON body as the message
+  // (e.g. `{"code":400,"error_code":"validation_failed","msg":"..."}`).
+  // Never show that to a user — pull the real fields out of it.
+  if (message.trim().startsWith('{')) {
+    try {
+      const body = JSON.parse(message);
+      code = body.error_code ?? body.code ?? code;
+      message = body.msg ?? body.message ?? message;
+    } catch {
+      /* not JSON after all — leave as-is */
+    }
+  }
+
+  // A disabled provider comes back as validation_failed with this message,
+  // which is indistinguishable by code from ordinary form-validation errors —
+  // so match the text.
+  if (/provider is not enabled|unsupported provider/i.test(message)) {
+    return 'That sign-in method is not enabled yet. Please use email and password, or contact support.';
+  }
 
   switch (code) {
     case 'invalid_credentials':
