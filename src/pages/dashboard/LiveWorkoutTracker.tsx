@@ -18,7 +18,8 @@ import {
   XCircle,
   Video,
   Volume2,
-  VolumeX
+  VolumeX,
+  Aperture
 } from "lucide-react";
 import { 
   Select,
@@ -40,7 +41,9 @@ import {
 } from "@/components/ui/alert-dialog";
 import { toast } from "@/components/ui/use-toast";
 import { RepCounter, getRepSpec, type RepSpec } from "@/lib/repCounter";
-import type { Keypoints } from "@/lib/poseGeometry";
+import { confidentKeypoint, MIN_KEYPOINT_SCORE, type Keypoints } from "@/lib/poseGeometry";
+import { getCoaching, getFocusJoints } from "@/lib/formFeedback";
+import { getCorrections, type Correction } from "@/lib/formCorrection";
 import { useCreateWorkoutSession } from "@/hooks/useWorkoutSessions";
 
 // Sample workout data
@@ -414,6 +417,11 @@ const LiveWorkoutTracker = () => {
   const [isSoundEnabled, setIsSoundEnabled] = useState(true);
   const [showInstructions, setShowInstructions] = useState(true);
   const [showPermissionDialog, setShowPermissionDialog] = useState(false);
+  // Strict form: when on, a rep only counts if its form was good enough. Off by
+  // default so approximate form rules never suppress legitimate reps.
+  const [strictForm, setStrictForm] = useState(false);
+  const strictFormRef = useRef(false);
+  useEffect(() => { strictFormRef.current = strictForm; }, [strictForm]);
   const requestAnimationRef = useRef<number | null>(null);
 
   // Rep-counting state machine + session bookkeeping.
@@ -421,30 +429,69 @@ const LiveWorkoutTracker = () => {
   const sessionStartRef = useRef<number>(0);
   const formFramesRef = useRef<{ good: number; total: number }>({ good: 0, total: 0 });
   const createSession = useCreateWorkoutSession();
-  
+
+  // The detection loop runs from a single captured closure, so anything it reads
+  // from React state would otherwise be frozen at loop-start. Mirror the values
+  // it needs into refs and keep them current.
+  const detectorRef = useRef<poseDetection.PoseDetector | null>(null);
+  const isPausedRef = useRef(false);
+  const selectedWorkoutRef = useRef(selectedWorkout);
+  useEffect(() => { detectorRef.current = detector; }, [detector]);
+  useEffect(() => { isPausedRef.current = isPaused; }, [isPaused]);
+  useEffect(() => { selectedWorkoutRef.current = selectedWorkout; }, [selectedWorkout]);
+
+  // Temporal debounce for the form label: only flip after several consecutive
+  // frames agree, so the readout (and the sound) stop flickering on noise.
+  const FORM_FLIP_FRAMES = 5;
+  const stableFormRef = useRef<boolean | null>(null);
+  const pendingFormRef = useRef<{ value: boolean; count: number }>({ value: false, count: 0 });
+  const resetFormSmoothing = () => {
+    stableFormRef.current = null;
+    pendingFormRef.current = { value: false, count: 0 };
+  };
+
   // Load TensorFlow.js and pose detector
   useEffect(() => {
     const loadModels = async () => {
       try {
+        // Prefer the GPU (WebGL) backend; fall back silently to whatever
+        // tf.ready() selects (CPU/WASM) on devices without WebGL. The WebGL
+        // backend ships inside the @tensorflow/tfjs union package we import.
+        await tf.setBackend("webgl").catch(() => undefined);
         await tf.ready();
-        
-        // Load the MoveNet model (lighter and faster than PoseNet)
+
+        // MoveNet Thunder: higher-capacity model (256px vs Lightning's 192px),
+        // noticeably more accurate keypoints while still real-time (>30 FPS) on
+        // most machines. enableSmoothing applies MoveNet's built-in temporal
+        // filter on top of our own EMA/debounce.
         const detectorConfig = {
-          modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING,
+          modelType: poseDetection.movenet.modelType.SINGLEPOSE_THUNDER,
           enableSmoothing: true,
+          minPoseScore: 0.25,
         };
-        
+
         const detector = await poseDetection.createDetector(
-          poseDetection.SupportedModels.MoveNet, 
+          poseDetection.SupportedModels.MoveNet,
           detectorConfig
         );
-        
+
+        // Warm up: run one inference so the first real frame doesn't pay the
+        // shader-compile / kernel-init cost mid-workout. A tensor input has no
+        // currentTime, so pass an explicit timestamp for the smoothing filter.
+        try {
+          const warm = tf.zeros([256, 256, 3]) as tf.Tensor3D;
+          await detector.estimatePoses(warm, undefined, performance.now());
+          warm.dispose();
+        } catch {
+          // Warmup is best-effort; ignore failures.
+        }
+
         setDetector(detector);
         setIsModelLoading(false);
-        
+
         toast({
           title: "AI Model loaded",
-          description: "The pose detection model is ready to track your workout.",
+          description: `Pose detection ready (MoveNet Thunder · ${tf.getBackend()}).`,
         });
       } catch (error) {
         console.error("Error loading models:", error);
@@ -504,6 +551,8 @@ const LiveWorkoutTracker = () => {
       repCounterRef.current = spec ? { counter: new RepCounter(spec), spec } : null;
       sessionStartRef.current = Date.now();
       formFramesRef.current = { good: 0, total: 0 };
+      resetFormSmoothing();
+      setIsGoodForm(null);
       setRepCount(0);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -515,6 +564,7 @@ const LiveWorkoutTracker = () => {
     repCounterRef.current = spec ? { counter: new RepCounter(spec), spec } : null;
     sessionStartRef.current = Date.now();
     formFramesRef.current = { good: 0, total: 0 };
+    resetFormSmoothing();
   };
 
   // Persist the just-finished session (if it has anything worth recording).
@@ -587,10 +637,67 @@ const LiveWorkoutTracker = () => {
     }
   };
 
-  // Toggle pause state
+  // Snapshot the current frame + skeleton overlay and download it as a PNG.
+  // Composited mirrored so the saved image matches the on-screen (mirror) view.
+  const captureSnapshot = () => {
+    const video = webcamRef.current?.video;
+    if (!video || video.readyState !== 4 || video.videoWidth === 0) {
+      toast({
+        title: "Camera not ready",
+        description: "Start the camera before capturing a snapshot.",
+        variant: "destructive",
+      });
+      return;
+    }
+    const w = video.videoWidth;
+    const h = video.videoHeight;
+    const out = document.createElement("canvas");
+    out.width = w;
+    out.height = h;
+    const ctx = out.getContext("2d");
+    if (!ctx) return;
+
+    // Mirror the frame + overlay to match what the user sees on screen.
+    ctx.save();
+    ctx.translate(w, 0);
+    ctx.scale(-1, 1);
+    ctx.drawImage(video, 0, 0, w, h);
+    if (canvasRef.current) ctx.drawImage(canvasRef.current, 0, 0, w, h);
+    ctx.restore();
+
+    // Burn in a small caption (drawn un-mirrored, on top).
+    ctx.fillStyle = "rgba(8,11,10,0.72)";
+    ctx.fillRect(16, h - 74, 240, 58);
+    ctx.fillStyle = "#1FDD80";
+    ctx.font = "bold 34px Inter, sans-serif";
+    ctx.fillText(`${repCount} reps`, 28, h - 34);
+    ctx.fillStyle = "#93A29B";
+    ctx.font = "500 15px Inter, sans-serif";
+    ctx.fillText(selectedWorkout.name, 28, h - 54);
+
+    out.toBlob((blob) => {
+      if (!blob) return;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `trainify-${selectedWorkout.id}-${repCount}reps-${Date.now()}.png`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    }, "image/png");
+
+    toast({ title: "Snapshot saved", description: "The image was downloaded to your device." });
+  };
+
+  // Toggle pause state. Drives isPausedRef synchronously so the loop's guard and
+  // the resume-reschedule can't race the state update.
   const togglePause = () => {
-    setIsPaused(prev => !prev);
-    if (isPaused) {
+    const next = !isPausedRef.current;
+    isPausedRef.current = next;
+    setIsPaused(next);
+    if (!next && isWebcamActive) {
+      if (requestAnimationRef.current) cancelAnimationFrame(requestAnimationRef.current);
       requestAnimationRef.current = requestAnimationFrame(detectPose);
     }
   };
@@ -604,7 +711,8 @@ const LiveWorkoutTracker = () => {
     repCounterRef.current?.counter.reset();
     sessionStartRef.current = Date.now();
     formFramesRef.current = { good: 0, total: 0 };
-    if (!isPaused && isWebcamActive) {
+    resetFormSmoothing();
+    if (!isPausedRef.current && isWebcamActive) {
       if (requestAnimationRef.current) {
         cancelAnimationFrame(requestAnimationRef.current);
       }
@@ -618,12 +726,16 @@ const LiveWorkoutTracker = () => {
       return null;
     }
     const keypoints = pose.keypoints;
-    const visibility = keypoints.reduce((sum, kp) => sum + (kp.score || 0), 0) / keypoints.length;
-    if (visibility < 0.5) {
+    // Presence gate: don't demand the *whole* body be visible (an upper-body
+    // exercise legitimately has the legs off-frame). Just require enough
+    // confident keypoints to know a person is really there.
+    const confidentCount = keypoints.filter((kp) => (kp.score ?? 0) >= MIN_KEYPOINT_SCORE).length;
+    if (confidentCount < 4) {
       return null;
     }
-    // Helper to get keypoint by name
-    const get = (name: string) => keypoints.find(kp => kp.name === name);
+    // Confidence-gated getter: an occluded/low-confidence joint reads as
+    // "not seen" so a case's checks skip rather than act on noisy coordinates.
+    const get = (name: string) => confidentKeypoint(keypoints as Keypoints, name);
     // Shoulder-width scale so pixel distance checks stop depending on how far
     // the user stands from the camera / the video resolution. `rel(px)` converts
     // an old constant (tuned at ~160px shoulder width) into the equivalent
@@ -650,7 +762,7 @@ const LiveWorkoutTracker = () => {
     const verticalDist = (a: any, b: any) => a && b ? Math.abs(a.y - b.y) : null;
     // Helper to check horizontal distance (for rows, etc)
     const horizontalDist = (a: any, b: any) => a && b ? Math.abs(a.x - b.x) : null;
-    switch (selectedWorkout.id) {
+    switch (selectedWorkoutRef.current.id) {
       // CHEST
       case 'push-ups': {
         const leftShoulder = get('left_shoulder');
@@ -1008,10 +1120,13 @@ const LiveWorkoutTracker = () => {
 
   // Main pose detection function
   const detectPose = async () => {
-    if (!detector || !webcamRef.current || !webcamRef.current.video || !canvasRef.current || isPaused) {
+    // Read live values from refs — the loop runs from one captured closure, so
+    // reading React state here would use stale, loop-start values.
+    const detector = detectorRef.current;
+    if (!detector || !webcamRef.current || !webcamRef.current.video || !canvasRef.current || isPausedRef.current) {
       return;
     }
-    
+
     const video = webcamRef.current.video;
     const canvas = canvasRef.current;
     
@@ -1040,34 +1155,61 @@ const LiveWorkoutTracker = () => {
         if (poses && poses.length > 0) {
           const pose = poses[0]; // We only care about the first detected person
 
-          // Analyze form (drives the skeleton colour + sound feedback).
-          const formStatus = analyzePose(pose);
+          // Raw per-frame form verdict (may be null when uncertain).
+          const rawForm = analyzePose(pose);
 
-          if (formStatus !== null && formStatus !== isGoodForm) {
-            setIsGoodForm(formStatus);
-            playSound(formStatus ? 'success' : 'error');
-          }
-
-          // Track form quality for the session's good-form percentage.
-          if (formStatus !== null) {
+          if (rawForm !== null) {
+            // Track form quality for the session's good-form percentage.
             formFramesRef.current.total += 1;
-            if (formStatus) formFramesRef.current.good += 1;
+            if (rawForm) formFramesRef.current.good += 1;
+
+            // Debounce the displayed verdict: require FORM_FLIP_FRAMES agreeing
+            // frames before flipping the label + playing a sound. This is what
+            // stops the good/bad flicker and the sound spam.
+            if (rawForm === stableFormRef.current) {
+              pendingFormRef.current.count = 0;
+            } else if (pendingFormRef.current.value === rawForm) {
+              pendingFormRef.current.count += 1;
+              if (pendingFormRef.current.count >= FORM_FLIP_FRAMES) {
+                stableFormRef.current = rawForm;
+                pendingFormRef.current.count = 0;
+                setIsGoodForm(rawForm);
+                playSound(rawForm ? 'success' : 'error');
+              }
+            } else {
+              pendingFormRef.current = { value: rawForm, count: 1 };
+            }
           }
 
-          // Rep counting is now a proper state machine fed by an exercise
-          // signal, independent of the form flag. A rep is a full movement
-          // cycle, not any bad->good flicker.
+          // Colour the skeleton by the *stable* verdict so it doesn't strobe.
+          const displayForm = stableFormRef.current;
+
+          // Rep counting is a state machine fed by the exercise signal,
+          // independent of the form flag. A rep is a full movement cycle.
           const counter = repCounterRef.current;
           if (counter) {
             const value = counter.spec.signal(pose.keypoints as Keypoints);
-            if (counter.counter.update(value, performance.now())) {
+            if (
+              counter.counter.update(value, performance.now(), {
+                formOk: displayForm,
+                requireGoodForm: strictFormRef.current,
+                minGoodFrac: 0.5,
+              })
+            ) {
               setRepCount(counter.counter.reps);
               playSound('success');
             }
           }
 
           // Draw skeleton
-          drawSkeleton(ctx, pose, videoWidth, videoHeight, formStatus);
+          drawSkeleton(ctx, pose, videoWidth, videoHeight, displayForm);
+
+          // Show where the user is wrong and where to move — a ghost of the
+          // correct limb + an arrow, derived from their own keypoints.
+          drawCorrections(
+            ctx,
+            getCorrections(selectedWorkoutRef.current.id, pose.keypoints as Keypoints)
+          );
         }
       }
     } catch (error) {
@@ -1078,31 +1220,25 @@ const LiveWorkoutTracker = () => {
     requestAnimationRef.current = requestAnimationFrame(detectPose);
   };
 
-  // Draw skeleton on canvas
+  // Draw the corrective skeleton. The body is drawn dim; the joints/bones that
+  // matter for the current exercise are emphasized and colour-coded by form
+  // (green = correct, red = fix this, white = not sure) so the user sees exactly
+  // which body part to correct. Focus joints pulse to draw the eye.
   const drawSkeleton = (
     ctx: CanvasRenderingContext2D,
     pose: poseDetection.Pose,
-    videoWidth: number,
-    videoHeight: number,
+    _videoWidth: number,
+    _videoHeight: number,
     formStatus: boolean | null
   ) => {
     if (!pose || !pose.keypoints) return;
-    
-    // Set line style based on form status
-    if (formStatus === true) {
-      ctx.strokeStyle = '#00FF7F'; // Green for good form
-      ctx.fillStyle = '#00FF7F';
-    } else if (formStatus === false) {
-      ctx.strokeStyle = '#F44336'; // Red for bad form
-      ctx.fillStyle = '#F44336';
-    } else {
-      ctx.strokeStyle = '#FFFFFF'; // White when form can't be determined
-      ctx.fillStyle = '#FFFFFF';
-    }
-    
-    ctx.lineWidth = 4;
-    
-    // Define connections between keypoints to form a skeleton
+
+    const focusColor =
+      formStatus === true ? '#1FDD80' : formStatus === false ? '#F0616D' : '#EAEAEA';
+    const dim = 'rgba(255,255,255,0.28)';
+
+    const focus = new Set(getFocusJoints(selectedWorkoutRef.current.id));
+
     const connections = [
       ['nose', 'left_eye'], ['nose', 'right_eye'],
       ['left_eye', 'left_ear'], ['right_eye', 'right_ear'],
@@ -1112,38 +1248,160 @@ const LiveWorkoutTracker = () => {
       ['left_shoulder', 'left_hip'], ['right_shoulder', 'right_hip'],
       ['left_hip', 'right_hip'],
       ['left_hip', 'left_knee'], ['right_hip', 'right_knee'],
-      ['left_knee', 'left_ankle'], ['right_knee', 'right_ankle']
+      ['left_knee', 'left_ankle'], ['right_knee', 'right_ankle'],
     ];
-    
-    // Create a map for easier lookup
-    const keypointMap = new Map();
-    pose.keypoints.forEach(keypoint => {
-      if (keypoint.name && keypoint.score && keypoint.score > 0.4) {
-        keypointMap.set(keypoint.name, keypoint);
-      }
+
+    const keypointMap = new Map<string, { x: number; y: number }>();
+    pose.keypoints.forEach((k) => {
+      if (k.name && k.score && k.score > 0.4) keypointMap.set(k.name, k);
     });
-    
-    // Draw connections
+
+    ctx.lineCap = 'round';
+
+    // Pass 1: dim bones (the whole body, for context).
+    ctx.strokeStyle = dim;
+    ctx.lineWidth = 3;
     for (const [from, to] of connections) {
-      const fromKeypoint = keypointMap.get(from);
-      const toKeypoint = keypointMap.get(to);
-      
-      if (fromKeypoint && toKeypoint) {
+      if (focus.has(from) || focus.has(to)) continue; // drawn highlighted below
+      const a = keypointMap.get(from);
+      const b = keypointMap.get(to);
+      if (a && b) {
         ctx.beginPath();
-        ctx.moveTo(fromKeypoint.x, fromKeypoint.y);
-        ctx.lineTo(toKeypoint.x, toKeypoint.y);
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
         ctx.stroke();
       }
     }
-    
-    // Draw keypoints
-    pose.keypoints.forEach(keypoint => {
-      if (keypoint.score && keypoint.score > 0.4) {
+
+    // Pass 2: highlighted bones touching a focus joint, in the form colour.
+    ctx.strokeStyle = focusColor;
+    ctx.lineWidth = 6;
+    ctx.shadowColor = focusColor;
+    ctx.shadowBlur = 12;
+    for (const [from, to] of connections) {
+      if (!(focus.has(from) || focus.has(to))) continue;
+      const a = keypointMap.get(from);
+      const b = keypointMap.get(to);
+      if (a && b) {
         ctx.beginPath();
-        ctx.arc(keypoint.x, keypoint.y, 6, 0, 2 * Math.PI);
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
+        ctx.stroke();
+      }
+    }
+    ctx.shadowBlur = 0;
+
+    // Dim dots for every visible joint.
+    ctx.fillStyle = dim;
+    pose.keypoints.forEach((k) => {
+      if (k.name && k.score && k.score > 0.4 && !focus.has(k.name)) {
+        ctx.beginPath();
+        ctx.arc(k.x, k.y, 4, 0, 2 * Math.PI);
         ctx.fill();
       }
     });
+
+    // Focus joints: a pulsing ring + solid centre in the form colour. When form
+    // is off these pulse red on the exact joints the user needs to correct.
+    const pulse = 1 + 0.35 * Math.sin(performance.now() / 180);
+    ctx.fillStyle = focusColor;
+    ctx.strokeStyle = focusColor;
+    focus.forEach((name) => {
+      const k = keypointMap.get(name);
+      if (!k) return;
+      ctx.beginPath();
+      ctx.arc(k.x, k.y, 8, 0, 2 * Math.PI);
+      ctx.fill();
+      ctx.globalAlpha = formStatus === false ? 0.9 : 0.5;
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(k.x, k.y, 14 * pulse, 0, 2 * Math.PI);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    });
+  };
+
+  // Draw on-camera corrections: a green ghost of where the limb *should* be,
+  // plus an arrow from the user's joint to the target. Derived from the user's
+  // own body, so it matches their scale/orientation. Shown only when off.
+  const drawCorrections = (ctx: CanvasRenderingContext2D, corrections: Correction[]) => {
+    const arrow = (from: { x: number; y: number }, to: { x: number; y: number }) => {
+      const ang = Math.atan2(to.y - from.y, to.x - from.x);
+      const dist = Math.hypot(to.x - from.x, to.y - from.y);
+      // Trim so the arrow sits between the joint dots, not buried under them.
+      const trim = Math.min(12, dist * 0.25);
+      const sx = from.x + Math.cos(ang) * trim;
+      const sy = from.y + Math.sin(ang) * trim;
+      const ex = to.x - Math.cos(ang) * trim;
+      const ey = to.y - Math.sin(ang) * trim;
+      const head = 18;
+      const drawPath = () => {
+        ctx.beginPath();
+        ctx.moveTo(sx, sy);
+        ctx.lineTo(ex, ey);
+        ctx.moveTo(ex, ey);
+        ctx.lineTo(ex - head * Math.cos(ang - Math.PI / 7), ey - head * Math.sin(ang - Math.PI / 7));
+        ctx.moveTo(ex, ey);
+        ctx.lineTo(ex - head * Math.cos(ang + Math.PI / 7), ey - head * Math.sin(ang + Math.PI / 7));
+        ctx.stroke();
+      };
+      // Dark underlay for contrast against any background.
+      ctx.strokeStyle = 'rgba(0,0,0,0.55)';
+      ctx.lineWidth = 8;
+      drawPath();
+      // Bright yellow arrow on top.
+      ctx.strokeStyle = '#FFD84D';
+      ctx.lineWidth = 4;
+      drawPath();
+    };
+
+    const pulse = 0.6 + 0.4 * Math.abs(Math.sin(performance.now() / 250));
+
+    for (const c of corrections) {
+      // Ghost of the corrected limb (where it should be).
+      ctx.strokeStyle = '#1FDD80';
+      ctx.lineWidth = 6;
+      ctx.lineCap = 'round';
+      ctx.shadowColor = 'rgba(31,221,128,0.6)';
+      ctx.shadowBlur = 12;
+      if (c.anchor) {
+        ctx.beginPath();
+        ctx.moveTo(c.anchor.x, c.anchor.y);
+        ctx.lineTo(c.target.x, c.target.y);
+        ctx.stroke();
+      }
+      if (c.end) {
+        ctx.beginPath();
+        ctx.moveTo(c.target.x, c.target.y);
+        ctx.lineTo(c.end.x, c.end.y);
+        ctx.stroke();
+      }
+      ctx.shadowBlur = 0;
+
+      // Target marker (correct position).
+      ctx.fillStyle = '#1FDD80';
+      ctx.beginPath();
+      ctx.arc(c.target.x, c.target.y, 7, 0, 2 * Math.PI);
+      ctx.fill();
+
+      // Current (wrong) joint — pulsing red.
+      ctx.fillStyle = '#F0616D';
+      ctx.beginPath();
+      ctx.arc(c.current.x, c.current.y, 7, 0, 2 * Math.PI);
+      ctx.fill();
+      ctx.strokeStyle = '#F0616D';
+      ctx.lineWidth = 3;
+      ctx.globalAlpha = 0.85;
+      ctx.beginPath();
+      ctx.arc(c.current.x, c.current.y, 14 * pulse, 0, 2 * Math.PI);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+
+      // Arrow: move from here -> to there.
+      ctx.strokeStyle = '#FFD84D';
+      ctx.lineWidth = 3;
+      arrow(c.current, c.target);
+    }
   };
 
   return (
@@ -1195,8 +1453,18 @@ const LiveWorkoutTracker = () => {
               </AlertDialogContent>
             </AlertDialog>
             
-            <Button 
-              variant="outline" 
+            <Button
+              variant="outline"
+              className={strictForm ? "border-fitness-green/50 text-fitness-green" : "border-fitness-dark-gray"}
+              onClick={() => setStrictForm((v) => !v)}
+              title="Strict form: only count reps performed with good form"
+            >
+              <CheckCircle2 className="h-4 w-4 mr-2" />
+              Strict form: {strictForm ? "On" : "Off"}
+            </Button>
+
+            <Button
+              variant="outline"
               className="border-fitness-dark-gray"
               onClick={() => setIsSoundEnabled(!isSoundEnabled)}
             >
@@ -1220,11 +1488,19 @@ const LiveWorkoutTracker = () => {
                       ref={webcamRef}
                       audio={false}
                       mirrored={true}
+                      videoConstraints={{
+                        width: { ideal: 1280 },
+                        height: { ideal: 720 },
+                        aspectRatio: 16 / 9,
+                        facingMode: "user",
+                      }}
                       className="absolute top-0 left-0 w-full h-full object-cover"
                     />
+                    {/* Mirror the overlay to match the mirrored feed so the
+                        skeleton tracks the body instead of its reflection. */}
                     <canvas
                       ref={canvasRef}
-                      className="absolute top-0 left-0 w-full h-full"
+                      className="absolute top-0 left-0 w-full h-full -scale-x-100"
                     />
 
                     {/* HUD corner frame (decorative) */}
@@ -1275,6 +1551,28 @@ const LiveWorkoutTracker = () => {
                         Reps · {selectedWorkout.name}
                       </div>
                     </div>
+
+                    {/* Live coaching banner — tells the user how to correct */}
+                    {!showInstructions && (
+                      <div className="absolute inset-x-4 bottom-4 flex justify-center sm:left-40">
+                        {isGoodForm === false ? (
+                          <div className="flex items-start gap-2 rounded-xl border border-fitness-error/40 bg-fitness-black/85 px-4 py-2.5 text-sm backdrop-blur">
+                            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-fitness-error" />
+                            <span className="text-white">{getCoaching(selectedWorkout.id).cue}</span>
+                          </div>
+                        ) : isGoodForm === true ? (
+                          <div className="flex items-center gap-2 rounded-xl border border-fitness-success/40 bg-fitness-black/85 px-4 py-2.5 text-sm text-fitness-success backdrop-blur">
+                            <CheckCircle2 className="h-4 w-4 shrink-0" />
+                            Great form — keep it up!
+                          </div>
+                        ) : (
+                          <div className="flex items-center gap-2 rounded-xl border border-white/10 bg-fitness-black/85 px-4 py-2.5 text-sm text-fitness-gray backdrop-blur">
+                            <Info className="h-4 w-4 shrink-0" />
+                            Step back so your full body is in frame.
+                          </div>
+                        )}
+                      </div>
+                    )}
                     
                     {/* Instructions overlay */}
                     {showInstructions && (
@@ -1341,11 +1639,20 @@ const LiveWorkoutTracker = () => {
                       >
                         {isPaused ? <Play className="h-4 w-4" /> : <Pause className="h-4 w-4" />}
                       </Button>
-                      <Button 
+                      <Button
                         onClick={resetWorkout}
                         variant="outline"
                       >
                         <RefreshCw className="h-4 w-4" />
+                      </Button>
+                      <Button
+                        onClick={captureSnapshot}
+                        variant="outline"
+                        className="border-fitness-green/40 text-fitness-green hover:bg-fitness-green/10"
+                        title="Capture snapshot"
+                      >
+                        <Aperture className="h-4 w-4 mr-2" />
+                        Capture
                       </Button>
                     </>
                   ) : (
@@ -1433,7 +1740,7 @@ const LiveWorkoutTracker = () => {
                 <Separator className="bg-fitness-dark-gray" />
                 
                 <div>
-                  <h3 className="text-sm font-medium mb-3">Instructions</h3>
+                  <h3 className="text-sm font-medium mb-3">How to do it right</h3>
                   <ul className="space-y-2 text-sm">
                     {selectedWorkout.instructions.map((instruction, i) => (
                       <li key={i} className="flex items-start text-fitness-gray">
@@ -1445,7 +1752,33 @@ const LiveWorkoutTracker = () => {
                     ))}
                   </ul>
                 </div>
-                
+
+                {/* Primary form cue — the one thing to focus on */}
+                <div className="rounded-lg border border-fitness-green/25 bg-fitness-green/10 p-3">
+                  <div className="flex items-start gap-2">
+                    <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-fitness-green" />
+                    <div>
+                      <h3 className="text-sm font-medium text-fitness-green">Form focus</h3>
+                      <p className="mt-1 text-sm text-fitness-gray">
+                        {getCoaching(selectedWorkout.id).cue}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Common mistakes to avoid */}
+                <div>
+                  <h3 className="mb-3 text-sm font-medium">Avoid these mistakes</h3>
+                  <ul className="space-y-2 text-sm">
+                    {getCoaching(selectedWorkout.id).mistakes.map((m, i) => (
+                      <li key={i} className="flex items-start text-fitness-gray">
+                        <XCircle className="mr-2 mt-0.5 h-4 w-4 shrink-0 text-fitness-error" />
+                        {m}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+
                 <div>
                   <h3 className="text-sm font-medium mb-3">Tutorial Video</h3>
                   <div className="aspect-video bg-fitness-dark-gray rounded-lg overflow-hidden">

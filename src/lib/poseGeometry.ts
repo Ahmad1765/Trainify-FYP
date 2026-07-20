@@ -21,6 +21,29 @@ export function getKeypoint(kp: Keypoints, name: string): Point | undefined {
   return kp.find((k) => k.name === name);
 }
 
+/**
+ * Minimum confidence for a keypoint to be trusted in a measurement. MoveNet
+ * always returns all 17 keypoints, including occluded ones, at low confidence
+ * and semi-random positions. Feeding those into angle/distance math is the root
+ * cause of jittery signals — so anything below this is treated as "not seen".
+ */
+export const MIN_KEYPOINT_SCORE = 0.3;
+
+/**
+ * Like getKeypoint, but returns undefined unless the point is confidently
+ * detected. Prefer this in any geometry that drives rep counting or form
+ * checks: an undefined point makes the measurement return null, and callers
+ * skip the frame instead of acting on noise.
+ */
+export function confidentKeypoint(
+  kp: Keypoints,
+  name: string,
+  minScore: number = MIN_KEYPOINT_SCORE,
+): Point | undefined {
+  const p = kp.find((k) => k.name === name);
+  return p && (p.score ?? 0) >= minScore ? p : undefined;
+}
+
 export function distance(a: Point | undefined, b: Point | undefined): number | null {
   if (!a || !b) return null;
   return Math.hypot(a.x - b.x, a.y - b.y);
@@ -52,7 +75,7 @@ export function angle(
  * shoulder is missing, so callers can skip a frame rather than divide by zero.
  */
 export function shoulderWidth(kp: Keypoints): number | null {
-  const d = distance(getKeypoint(kp, 'left_shoulder'), getKeypoint(kp, 'right_shoulder'));
+  const d = distance(confidentKeypoint(kp, 'left_shoulder'), confidentKeypoint(kp, 'right_shoulder'));
   return d && d > 0 ? d : null;
 }
 
