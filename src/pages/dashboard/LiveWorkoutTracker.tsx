@@ -448,6 +448,21 @@ const LiveWorkoutTracker = () => {
   const resetFormSmoothing = () => {
     stableFormRef.current = null;
     pendingFormRef.current = { value: false, count: 0 };
+    coachRef.current = '';
+  };
+
+  // Always-on coaching line, driven by the (validated) rep signal so the user
+  // always sees the tracker reacting to their movement in real time.
+  const [coach, setCoach] = useState<{ text: string; tone: 'good' | 'warn' | 'info' }>({
+    text: 'Position your body in the frame to begin.',
+    tone: 'info',
+  });
+  const coachRef = useRef('');
+  const setCoachThrottled = (text: string, tone: 'good' | 'warn' | 'info') => {
+    if (coachRef.current !== text) {
+      coachRef.current = text;
+      setCoach({ text, tone });
+    }
   };
 
   // Load TensorFlow.js and pose detector
@@ -460,12 +475,11 @@ const LiveWorkoutTracker = () => {
         await tf.setBackend("webgl").catch(() => undefined);
         await tf.ready();
 
-        // MoveNet Thunder: higher-capacity model (256px vs Lightning's 192px),
-        // noticeably more accurate keypoints while still real-time (>30 FPS) on
-        // most machines. enableSmoothing applies MoveNet's built-in temporal
-        // filter on top of our own EMA/debounce.
+        // MoveNet Lightning: fast (>50 FPS), so the skeleton tracks smoothly and
+        // the tracker feels responsive on any machine. enableSmoothing applies
+        // MoveNet's built-in temporal filter on top of our own EMA/debounce.
         const detectorConfig = {
-          modelType: poseDetection.movenet.modelType.SINGLEPOSE_THUNDER,
+          modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING,
           enableSmoothing: true,
           minPoseScore: 0.25,
         };
@@ -491,7 +505,7 @@ const LiveWorkoutTracker = () => {
 
         toast({
           title: "AI Model loaded",
-          description: `Pose detection ready (MoveNet Thunder · ${tf.getBackend()}).`,
+          description: "Pose detection ready — start your camera.",
         });
       } catch (error) {
         console.error("Error loading models:", error);
@@ -1187,17 +1201,33 @@ const LiveWorkoutTracker = () => {
           // Rep counting is a state machine fed by the exercise signal,
           // independent of the form flag. A rep is a full movement cycle.
           const counter = repCounterRef.current;
+          const corrections = getCorrections(selectedWorkoutRef.current.id, pose.keypoints as Keypoints);
           if (counter) {
             const value = counter.spec.signal(pose.keypoints as Keypoints);
-            if (
-              counter.counter.update(value, performance.now(), {
-                formOk: displayForm,
-                requireGoodForm: strictFormRef.current,
-                minGoodFrac: 0.5,
-              })
-            ) {
+            const repped = counter.counter.update(value, performance.now(), {
+              formOk: displayForm,
+              requireGoodForm: strictFormRef.current,
+              minGoodFrac: 0.5,
+            });
+            if (repped) {
               setRepCount(counter.counter.reps);
               playSound('success');
+            }
+
+            // Always-on coaching from the live signal, so the tracker visibly
+            // reacts every frame. Priority: a fault correction > rep depth cue.
+            if (corrections.length > 0) {
+              setCoachThrottled(getCoaching(selectedWorkoutRef.current.id).cue, 'warn');
+            } else if (counter.spec.isometric) {
+              setCoachThrottled('Hold steady — keep your body in one straight line.', 'good');
+            } else if (value === null) {
+              setCoachThrottled('Make sure the working limbs are in frame.', 'info');
+            } else if (value >= counter.spec.upAbove) {
+              setCoachThrottled('Start position — lower into the rep.', 'info');
+            } else if (value > counter.spec.downBelow) {
+              setCoachThrottled('Keep going — go through the full range.', 'warn');
+            } else {
+              setCoachThrottled('Great depth — now return to the start.', 'good');
             }
           }
 
@@ -1206,10 +1236,7 @@ const LiveWorkoutTracker = () => {
 
           // Show where the user is wrong and where to move — a ghost of the
           // correct limb + an arrow, derived from their own keypoints.
-          drawCorrections(
-            ctx,
-            getCorrections(selectedWorkoutRef.current.id, pose.keypoints as Keypoints)
-          );
+          drawCorrections(ctx, corrections);
         }
       }
     } catch (error) {
@@ -1552,25 +1579,27 @@ const LiveWorkoutTracker = () => {
                       </div>
                     </div>
 
-                    {/* Live coaching banner — tells the user how to correct */}
+                    {/* Always-on coaching banner — reacts to your movement live */}
                     {!showInstructions && (
                       <div className="absolute inset-x-4 bottom-4 flex justify-center sm:left-40">
-                        {isGoodForm === false ? (
-                          <div className="flex items-start gap-2 rounded-xl border border-fitness-error/40 bg-fitness-black/85 px-4 py-2.5 text-sm backdrop-blur">
-                            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-fitness-error" />
-                            <span className="text-white">{getCoaching(selectedWorkout.id).cue}</span>
-                          </div>
-                        ) : isGoodForm === true ? (
-                          <div className="flex items-center gap-2 rounded-xl border border-fitness-success/40 bg-fitness-black/85 px-4 py-2.5 text-sm text-fitness-success backdrop-blur">
+                        <div
+                          className={`flex items-center gap-2 rounded-xl border bg-fitness-black/85 px-4 py-2.5 text-sm backdrop-blur ${
+                            coach.tone === 'good'
+                              ? 'border-fitness-success/40 text-fitness-success'
+                              : coach.tone === 'warn'
+                              ? 'border-fitness-error/40 text-white'
+                              : 'border-white/10 text-fitness-gray'
+                          }`}
+                        >
+                          {coach.tone === 'good' ? (
                             <CheckCircle2 className="h-4 w-4 shrink-0" />
-                            Great form — keep it up!
-                          </div>
-                        ) : (
-                          <div className="flex items-center gap-2 rounded-xl border border-white/10 bg-fitness-black/85 px-4 py-2.5 text-sm text-fitness-gray backdrop-blur">
+                          ) : coach.tone === 'warn' ? (
+                            <AlertTriangle className="h-4 w-4 shrink-0 text-fitness-error" />
+                          ) : (
                             <Info className="h-4 w-4 shrink-0" />
-                            Step back so your full body is in frame.
-                          </div>
-                        )}
+                          )}
+                          <span>{coach.text}</span>
+                        </div>
                       </div>
                     )}
                     

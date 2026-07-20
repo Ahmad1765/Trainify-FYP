@@ -197,6 +197,7 @@ export const correctionPose = {
   curlCorrect: () =>
     pose({
       left_shoulder: A.Lsh, right_shoulder: A.Rsh,
+      left_hip: A.Lhip, right_hip: A.Rhip, // give a torso so the view reads as front
       left_elbow: { x: A.Lsh.x, y: 360 }, // under shoulder
       right_elbow: { x: A.Rsh.x, y: 360 },
       left_wrist: { x: A.Lsh.x, y: 300 }, right_wrist: { x: A.Rsh.x, y: 300 },
@@ -205,8 +206,9 @@ export const correctionPose = {
   curlElbowFlare: () =>
     pose({
       left_shoulder: A.Lsh, right_shoulder: A.Rsh,
-      left_elbow: { x: A.Lsh.x - 0.5 * sw, y: 360 }, // flared out
-      right_elbow: { x: A.Rsh.x + 0.5 * sw, y: 360 },
+      left_hip: A.Lhip, right_hip: A.Rhip,
+      left_elbow: { x: A.Lsh.x - 0.8 * sw, y: 360 }, // flared well outside the shoulder
+      right_elbow: { x: A.Rsh.x + 0.8 * sw, y: 360 },
       left_wrist: { x: A.Lsh.x, y: 300 }, right_wrist: { x: A.Rsh.x, y: 300 },
     }),
 
