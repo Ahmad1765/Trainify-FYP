@@ -39,6 +39,9 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { toast } from "@/components/ui/use-toast";
+import { RepCounter, getRepSpec, type RepSpec } from "@/lib/repCounter";
+import type { Keypoints } from "@/lib/poseGeometry";
+import { useCreateWorkoutSession } from "@/hooks/useWorkoutSessions";
 
 // Sample workout data
 const WORKOUTS = [
@@ -412,6 +415,12 @@ const LiveWorkoutTracker = () => {
   const [showInstructions, setShowInstructions] = useState(true);
   const [showPermissionDialog, setShowPermissionDialog] = useState(false);
   const requestAnimationRef = useRef<number | null>(null);
+
+  // Rep-counting state machine + session bookkeeping.
+  const repCounterRef = useRef<{ counter: RepCounter; spec: RepSpec } | null>(null);
+  const sessionStartRef = useRef<number>(0);
+  const formFramesRef = useRef<{ good: number; total: number }>({ good: 0, total: 0 });
+  const createSession = useCreateWorkoutSession();
   
   // Load TensorFlow.js and pose detector
   useEffect(() => {
@@ -487,6 +496,48 @@ const LiveWorkoutTracker = () => {
     }
   }, [isSoundEnabled]);
 
+  // When the exercise changes mid-session, rebuild the counter with the new
+  // exercise's signal + thresholds (runs after selectedWorkout has updated).
+  useEffect(() => {
+    if (isWebcamActive) {
+      const spec = getRepSpec(selectedWorkout.id);
+      repCounterRef.current = spec ? { counter: new RepCounter(spec), spec } : null;
+      sessionStartRef.current = Date.now();
+      formFramesRef.current = { good: 0, total: 0 };
+      setRepCount(0);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedWorkout.id]);
+
+  // Set up a fresh rep counter + session timers for the current exercise.
+  const beginSession = () => {
+    const spec = getRepSpec(selectedWorkout.id);
+    repCounterRef.current = spec ? { counter: new RepCounter(spec), spec } : null;
+    sessionStartRef.current = Date.now();
+    formFramesRef.current = { good: 0, total: 0 };
+  };
+
+  // Persist the just-finished session (if it has anything worth recording).
+  const saveSession = () => {
+    const durationSec = Math.round((Date.now() - sessionStartRef.current) / 1000);
+    const reps = repCounterRef.current?.counter.reps ?? 0;
+    const { good, total } = formFramesRef.current;
+    // Skip trivial/empty sessions.
+    if (durationSec < 3 || (reps === 0 && total === 0)) return;
+
+    createSession.mutate({
+      exerciseId: selectedWorkout.id,
+      exerciseName: selectedWorkout.name,
+      reps,
+      durationSec,
+      goodFormPct: total > 0 ? Math.round((good / total) * 100) : null,
+    });
+    toast({
+      title: "Workout saved",
+      description: `${selectedWorkout.name}: ${reps} rep${reps === 1 ? "" : "s"} in ${durationSec}s.`,
+    });
+  };
+
   // Start webcam and pose detection
   const startWebcam = async () => {
     try {
@@ -496,11 +547,14 @@ const LiveWorkoutTracker = () => {
       
       setIsWebcamActive(true);
       setShowInstructions(true);
-      
+
       // Reset rep count and form status
       setRepCount(0);
       setIsGoodForm(null);
-      
+
+      // Begin a fresh session and rep counter for the selected exercise.
+      beginSession();
+
       // Start the detection loop in the next frame
       if (requestAnimationRef.current) {
         cancelAnimationFrame(requestAnimationRef.current);
@@ -514,6 +568,9 @@ const LiveWorkoutTracker = () => {
 
   // Stop webcam and pose detection
   const stopWebcam = () => {
+    // Record the session before tearing everything down.
+    saveSession();
+
     setIsWebcamActive(false);
     if (requestAnimationRef.current) {
       cancelAnimationFrame(requestAnimationRef.current);
@@ -542,6 +599,11 @@ const LiveWorkoutTracker = () => {
   const resetWorkout = () => {
     setRepCount(0);
     setIsGoodForm(null);
+    // Reset counter + timers. On an exercise switch selectedWorkout is still the
+    // previous value here; the effect below rebuilds the spec once it updates.
+    repCounterRef.current?.counter.reset();
+    sessionStartRef.current = Date.now();
+    formFramesRef.current = { good: 0, total: 0 };
     if (!isPaused && isWebcamActive) {
       if (requestAnimationRef.current) {
         cancelAnimationFrame(requestAnimationRef.current);
@@ -562,6 +624,16 @@ const LiveWorkoutTracker = () => {
     }
     // Helper to get keypoint by name
     const get = (name: string) => keypoints.find(kp => kp.name === name);
+    // Shoulder-width scale so pixel distance checks stop depending on how far
+    // the user stands from the camera / the video resolution. `rel(px)` converts
+    // an old constant (tuned at ~160px shoulder width) into the equivalent
+    // fraction of the current shoulder width, preserving behaviour at that
+    // reference framing while scaling everywhere else. Falls back to the raw
+    // pixel value if shoulders aren't both visible.
+    const _ls = get('left_shoulder');
+    const _rs = get('right_shoulder');
+    const _shoulderW = _ls && _rs ? Math.hypot(_ls.x - _rs.x, _ls.y - _rs.y) : 0;
+    const rel = (px: number) => (_shoulderW > 0 ? (px / 160) * _shoulderW : px);
     // Helper to calculate angle between three points
     const angle = (a: any, b: any, c: any) => {
       if (!a || !b || !c) return null;
@@ -641,7 +713,7 @@ const LiveWorkoutTracker = () => {
         const leftAngle = angle(leftShoulder, leftElbow, leftWrist);
         const rightAngle = angle(rightShoulder, rightElbow, rightWrist);
         if (leftAngle && rightAngle && leftShoulder && rightShoulder) {
-          const torsoLean = Math.abs(leftShoulder.x - rightShoulder.x) > 40; // crude lean check
+          const torsoLean = Math.abs(leftShoulder.x - rightShoulder.x) > rel(40); // crude lean check
           return leftAngle < 100 && rightAngle < 100 && torsoLean;
         }
         break;
@@ -672,7 +744,7 @@ const LiveWorkoutTracker = () => {
         const leftElbow = get('left_elbow');
         const rightElbow = get('right_elbow');
         if (leftShoulder && rightShoulder && leftHip && rightHip && leftElbow && rightElbow) {
-          const bodyStraight = Math.abs(leftShoulder.y - leftHip.y) < 40 && Math.abs(rightShoulder.y - rightHip.y) < 40;
+          const bodyStraight = Math.abs(leftShoulder.y - leftHip.y) < rel(40) && Math.abs(rightShoulder.y - rightHip.y) < rel(40);
           const elbowsBent = leftElbow.y < leftShoulder.y && rightElbow.y < rightShoulder.y;
           return bodyStraight && elbowsBent;
         }
@@ -701,8 +773,8 @@ const LiveWorkoutTracker = () => {
         const rightShoulder = get('right_shoulder');
         const rightWrist = get('right_wrist');
         if (leftShoulder && leftWrist && rightShoulder && rightWrist) {
-          const leftAtHeight = Math.abs(leftWrist.y - leftShoulder.y) < 40;
-          const rightAtHeight = Math.abs(rightWrist.y - rightShoulder.y) < 40;
+          const leftAtHeight = Math.abs(leftWrist.y - leftShoulder.y) < rel(40);
+          const rightAtHeight = Math.abs(rightWrist.y - rightShoulder.y) < rel(40);
           return leftAtHeight && rightAtHeight;
         }
         break;
@@ -714,8 +786,8 @@ const LiveWorkoutTracker = () => {
         const rightShoulder = get('right_shoulder');
         const rightWrist = get('right_wrist');
         if (leftShoulder && leftWrist && rightShoulder && rightWrist) {
-          const leftFront = Math.abs(leftWrist.y - leftShoulder.y) < 40 && leftWrist.x > leftShoulder.x;
-          const rightFront = Math.abs(rightWrist.y - rightShoulder.y) < 40 && rightWrist.x < rightShoulder.x;
+          const leftFront = Math.abs(leftWrist.y - leftShoulder.y) < rel(40) && leftWrist.x > leftShoulder.x;
+          const rightFront = Math.abs(rightWrist.y - rightShoulder.y) < rel(40) && rightWrist.x < rightShoulder.x;
           return leftFront && rightFront;
         }
         break;
@@ -730,7 +802,7 @@ const LiveWorkoutTracker = () => {
         const rightWrist = get('right_wrist');
         if (leftShoulder && rightShoulder && leftHip && rightHip && leftWrist && rightWrist) {
           const torsoBent = leftShoulder.y > leftHip.y && rightShoulder.y > rightHip.y;
-          const armsOut = Math.abs(leftWrist.y - leftShoulder.y) < 40 && Math.abs(rightWrist.y - rightShoulder.y) < 40;
+          const armsOut = Math.abs(leftWrist.y - leftShoulder.y) < rel(40) && Math.abs(rightWrist.y - rightShoulder.y) < rel(40);
           return torsoBent && armsOut;
         }
         break;
@@ -850,8 +922,8 @@ const LiveWorkoutTracker = () => {
         const leftShoulder = get('left_shoulder');
         const rightShoulder = get('right_shoulder');
         if (leftAnkle && rightAnkle && leftHip && rightHip && leftShoulder && rightShoulder) {
-          const hipsAligned = Math.abs(leftHip.y - rightHip.y) < 20;
-          const shouldersAligned = Math.abs(leftShoulder.y - rightShoulder.y) < 20;
+          const hipsAligned = Math.abs(leftHip.y - rightHip.y) < rel(20);
+          const shouldersAligned = Math.abs(leftShoulder.y - rightShoulder.y) < rel(20);
           const onToes = leftAnkle.y < leftHip.y && rightAnkle.y < rightHip.y;
           return hipsAligned && shouldersAligned && onToes;
         }
@@ -882,7 +954,7 @@ const LiveWorkoutTracker = () => {
         if (leftShoulder && rightShoulder && leftHip && rightHip) {
           const avgShoulderY = (leftShoulder.y + rightShoulder.y) / 2;
           const avgHipY = (leftHip.y + rightHip.y) / 2;
-          return avgShoulderY < avgHipY - 30;
+          return avgShoulderY < avgHipY - rel(30);
         }
         break;
       }
@@ -893,8 +965,8 @@ const LiveWorkoutTracker = () => {
         const rightElbow = get('right_elbow');
         const leftKnee = get('left_knee');
         if (leftElbow && rightKnee && rightElbow && leftKnee) {
-          const leftClose = Math.abs(leftElbow.x - rightKnee.x) < 40 && Math.abs(leftElbow.y - rightKnee.y) < 40;
-          const rightClose = Math.abs(rightElbow.x - leftKnee.x) < 40 && Math.abs(rightElbow.y - leftKnee.y) < 40;
+          const leftClose = Math.abs(leftElbow.x - rightKnee.x) < rel(40) && Math.abs(leftElbow.y - rightKnee.y) < rel(40);
+          const rightClose = Math.abs(rightElbow.x - leftKnee.x) < rel(40) && Math.abs(rightElbow.y - leftKnee.y) < rel(40);
           return leftClose || rightClose;
         }
         break;
@@ -906,8 +978,8 @@ const LiveWorkoutTracker = () => {
         const rightHip = get('right_hip');
         const rightKnee = get('right_knee');
         if (leftHip && leftKnee && rightHip && rightKnee) {
-          const leftClose = Math.abs(leftKnee.y - leftHip.y) < 60;
-          const rightClose = Math.abs(rightKnee.y - rightHip.y) < 60;
+          const leftClose = Math.abs(leftKnee.y - leftHip.y) < rel(60);
+          const rightClose = Math.abs(rightKnee.y - rightHip.y) < rel(60);
           return leftClose || rightClose;
         }
         break;
@@ -923,7 +995,7 @@ const LiveWorkoutTracker = () => {
         const rightShoulder = get('right_shoulder');
         if (leftWrist && rightWrist && leftAnkle && rightAnkle && leftShoulder && rightShoulder) {
           const armsUp = leftWrist.y < leftShoulder.y && rightWrist.y < rightShoulder.y;
-          const legsApart = Math.abs(leftAnkle.x - rightAnkle.x) > 150;
+          const legsApart = Math.abs(leftAnkle.x - rightAnkle.x) > rel(150);
           return armsUp && legsApart;
         }
         break;
@@ -967,26 +1039,33 @@ const LiveWorkoutTracker = () => {
         // Draw the skeleton if we have poses
         if (poses && poses.length > 0) {
           const pose = poses[0]; // We only care about the first detected person
-          
-          // Analyze form for the selected workout
+
+          // Analyze form (drives the skeleton colour + sound feedback).
           const formStatus = analyzePose(pose);
-          
-          // Update form status if it changed
+
           if (formStatus !== null && formStatus !== isGoodForm) {
             setIsGoodForm(formStatus);
-            if (formStatus) {
-              // Good form detected
+            playSound(formStatus ? 'success' : 'error');
+          }
+
+          // Track form quality for the session's good-form percentage.
+          if (formStatus !== null) {
+            formFramesRef.current.total += 1;
+            if (formStatus) formFramesRef.current.good += 1;
+          }
+
+          // Rep counting is now a proper state machine fed by an exercise
+          // signal, independent of the form flag. A rep is a full movement
+          // cycle, not any bad->good flicker.
+          const counter = repCounterRef.current;
+          if (counter) {
+            const value = counter.spec.signal(pose.keypoints as Keypoints);
+            if (counter.counter.update(value, performance.now())) {
+              setRepCount(counter.counter.reps);
               playSound('success');
-              // Increment rep count (in a real app, you would detect actual reps)
-              if (isGoodForm === false) { // Only increment if changing from bad to good
-                setRepCount(prev => prev + 1);
-              }
-            } else {
-              // Bad form detected
-              playSound('error');
             }
           }
-          
+
           // Draw skeleton
           drawSkeleton(ctx, pose, videoWidth, videoHeight, formStatus);
         }

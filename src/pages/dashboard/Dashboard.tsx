@@ -4,16 +4,11 @@ import { Link } from "react-router-dom";
 import DashboardLayout from "@/components/layout/DashboardLayout";
 import { useAuth } from "@/contexts/AuthContext";
 import { useProfile, displayNameOf } from "@/hooks/useProfile";
+import { useWorkoutSessions, useWorkoutStats } from "@/hooks/useWorkoutSessions";
+import { formatDuration, relativeDay } from "@/lib/format";
 import { Button } from "@/components/ui/button";
 import { ArrowRight, Clock, Calendar, Activity, ChevronRight, Trophy, Video, Camera, Dumbbell, Calculator, Utensils } from "lucide-react";
 import { Progress } from "@/components/ui/progress";
-
-// Mock data
-const workoutHistory = [
-  { id: 1, name: "Full Body Workout", date: "Today", duration: "45 min", calories: 320 },
-  { id: 2, name: "Upper Body Strength", date: "Yesterday", duration: "30 min", calories: 250 },
-  { id: 3, name: "HIIT Cardio", date: "2 days ago", duration: "20 min", calories: 210 },
-];
 
 const upcomingWorkouts = [
   { id: 1, name: "Leg Day", scheduled: "Tomorrow, 6:00 PM", duration: "40 min" },
@@ -23,8 +18,15 @@ const upcomingWorkouts = [
 const Dashboard = () => {
   const { user } = useAuth();
   const { data: profile } = useProfile();
+  const { data: sessions = [] } = useWorkoutSessions();
+  const { stats } = useWorkoutStats();
   const today = new Date();
   const formattedDate = today.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
+
+  // Real figures derived from the workout_sessions log.
+  const weekAgo = Date.now() - 7 * 86_400_000;
+  const workoutsThisWeek = sessions.filter((s) => new Date(s.created_at).getTime() >= weekAgo).length;
+  const recentWorkouts = sessions.slice(0, 3);
 
   return (
     <DashboardLayout>
@@ -55,7 +57,7 @@ const Dashboard = () => {
             <div className="flex justify-between items-start">
               <div>
                 <p className="text-fitness-gray text-sm">Daily Streak</p>
-                <h3 className="text-2xl font-bold mt-1">7 Days</h3>
+                <h3 className="text-2xl font-bold mt-1">{stats.currentStreakDays} {stats.currentStreakDays === 1 ? "Day" : "Days"}</h3>
               </div>
               <div className="bg-fitness-green/20 p-2 rounded-lg">
                 <Trophy className="h-5 w-5 text-fitness-green" />
@@ -69,7 +71,7 @@ const Dashboard = () => {
             <div className="flex justify-between items-start">
               <div>
                 <p className="text-fitness-gray text-sm">This Week</p>
-                <h3 className="text-2xl font-bold mt-1">4 Workouts</h3>
+                <h3 className="text-2xl font-bold mt-1">{workoutsThisWeek} Workouts</h3>
               </div>
               <div className="bg-fitness-green/20 p-2 rounded-lg">
                 <Activity className="h-5 w-5 text-fitness-green" />
@@ -83,27 +85,27 @@ const Dashboard = () => {
             <div className="flex justify-between items-start">
               <div>
                 <p className="text-fitness-gray text-sm">Total Time</p>
-                <h3 className="text-2xl font-bold mt-1">3h 45m</h3>
+                <h3 className="text-2xl font-bold mt-1">{formatDuration(stats.totalDurationSec)}</h3>
               </div>
               <div className="bg-fitness-green/20 p-2 rounded-lg">
                 <Clock className="h-5 w-5 text-fitness-green" />
               </div>
             </div>
-            <p className="text-xs text-fitness-gray mt-3">This week</p>
+            <p className="text-xs text-fitness-gray mt-3">All time</p>
             <Progress value={75} className="h-1.5 mt-1 bg-fitness-dark-gray" />
           </div>
           
           <div className="bg-fitness-card-bg p-6 rounded-xl">
             <div className="flex justify-between items-start">
               <div>
-                <p className="text-fitness-gray text-sm">Calories Burned</p>
-                <h3 className="text-2xl font-bold mt-1">2,340</h3>
+                <p className="text-fitness-gray text-sm">Total Reps</p>
+                <h3 className="text-2xl font-bold mt-1">{stats.totalReps.toLocaleString()}</h3>
               </div>
               <div className="bg-fitness-green/20 p-2 rounded-lg">
                 <Calendar className="h-5 w-5 text-fitness-green" />
               </div>
             </div>
-            <p className="text-xs text-fitness-gray mt-3">This week</p>
+            <p className="text-xs text-fitness-gray mt-3">All time</p>
             <Progress value={60} className="h-1.5 mt-1 bg-fitness-dark-gray" />
           </div>
         </div>
@@ -173,23 +175,29 @@ const Dashboard = () => {
             </div>
             
             <div className="space-y-4">
-              {workoutHistory.map((workout) => (
-                <div key={workout.id} className="flex items-center justify-between p-3 bg-fitness-dark-gray rounded-lg">
-                  <div className="flex items-center">
-                    <div className="h-10 w-10 rounded-full bg-fitness-green/20 flex items-center justify-center mr-3">
-                      <Activity className="h-5 w-5 text-fitness-green" />
+              {recentWorkouts.length === 0 ? (
+                <p className="text-sm text-fitness-gray py-4 text-center">
+                  No workouts yet. Start the Live Tracker to log your first session.
+                </p>
+              ) : (
+                recentWorkouts.map((workout) => (
+                  <div key={workout.id} className="flex items-center justify-between p-3 bg-fitness-dark-gray rounded-lg">
+                    <div className="flex items-center">
+                      <div className="h-10 w-10 rounded-full bg-fitness-green/20 flex items-center justify-center mr-3">
+                        <Activity className="h-5 w-5 text-fitness-green" />
+                      </div>
+                      <div>
+                        <h3 className="font-medium">{workout.exercise_name}</h3>
+                        <p className="text-xs text-fitness-gray mt-0.5">{relativeDay(workout.created_at)}</p>
+                      </div>
                     </div>
-                    <div>
-                      <h3 className="font-medium">{workout.name}</h3>
-                      <p className="text-xs text-fitness-gray mt-0.5">{workout.date}</p>
+                    <div className="text-right">
+                      <div className="text-sm">{formatDuration(workout.duration_sec)}</div>
+                      <div className="text-xs text-fitness-gray">{workout.reps} reps</div>
                     </div>
                   </div>
-                  <div className="text-right">
-                    <div className="text-sm">{workout.duration}</div>
-                    <div className="text-xs text-fitness-gray">{workout.calories} cal</div>
-                  </div>
-                </div>
-              ))}
+                ))
+              )}
             </div>
           </div>
 

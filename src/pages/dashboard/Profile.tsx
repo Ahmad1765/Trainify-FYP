@@ -3,6 +3,8 @@ import { useState, useEffect, useRef } from "react";
 import DashboardLayout from "@/components/layout/DashboardLayout";
 import { toast } from "@/components/ui/use-toast";
 import { useProfile, useUpdateProfile, useUploadAvatar, displayNameOf } from "@/hooks/useProfile";
+import { useWorkoutSessions, useWorkoutStats } from "@/hooks/useWorkoutSessions";
+import { formatDuration } from "@/lib/format";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -46,6 +48,8 @@ const Profile = () => {
   const { data: profile } = useProfile();
   const updateProfile = useUpdateProfile();
   const uploadAvatar = useUploadAvatar();
+  const { data: sessions = [] } = useWorkoutSessions();
+  const { stats: workoutStats } = useWorkoutStats();
   const avatarInputRef = useRef<HTMLInputElement>(null);
   const [isEditing, setIsEditing] = useState(false);
   const [profileForm, setProfileForm] = useState({
@@ -117,54 +121,23 @@ const Profile = () => {
     }
   };
   
-  // Sample statistics data
+  // Real statistics, aggregated from the workout_sessions log.
   const stats = {
-    workoutsCompleted: 24,
-    totalWorkoutTime: "16h 45m",
-    currentStreak: 5,
-    longestStreak: 14,
-    caloriesBurned: 8750,
-    achievements: 7,
+    workoutsCompleted: workoutStats.totalWorkouts,
+    totalWorkoutTime: formatDuration(workoutStats.totalDurationSec),
+    currentStreak: workoutStats.currentStreakDays,
+    longestStreak: workoutStats.longestStreakDays,
+    totalReps: workoutStats.totalReps,
   };
-  
-  // Sample workout history
-  const workoutHistory = [
-    { 
-      date: "2023-04-15", 
-      name: "Full Body Workout", 
-      duration: "45:00", 
-      calories: 320,
-      exercises: 8,
-    },
-    { 
-      date: "2023-04-13", 
-      name: "Upper Body Focus", 
-      duration: "35:20", 
-      calories: 280,
-      exercises: 6,
-    },
-    { 
-      date: "2023-04-11", 
-      name: "Lower Body Strength", 
-      duration: "40:15", 
-      calories: 350,
-      exercises: 7,
-    },
-    { 
-      date: "2023-04-10", 
-      name: "HIIT Cardio", 
-      duration: "25:00", 
-      calories: 220,
-      exercises: 5,
-    },
-    { 
-      date: "2023-04-08", 
-      name: "Core Workout", 
-      duration: "30:10", 
-      calories: 210,
-      exercises: 6,
-    },
-  ];
+
+  // Real workout history from the session log.
+  const workoutHistory = sessions.map((s) => ({
+    date: s.created_at,
+    name: s.exercise_name,
+    duration: formatDuration(s.duration_sec),
+    reps: s.reps,
+    form: s.good_form_pct != null ? `${s.good_form_pct}%` : "—",
+  }));
 
   return (
     <DashboardLayout>
@@ -545,16 +518,10 @@ const Profile = () => {
                   
                   <div className="space-y-3">
                     <div className="flex justify-between items-center">
-                      <div className="text-sm">Calories Burned</div>
-                      <div className="text-sm font-medium">{stats.caloriesBurned}</div>
+                      <div className="text-sm">Total Reps</div>
+                      <div className="text-sm font-medium">{stats.totalReps.toLocaleString()}</div>
                     </div>
-                    <Progress value={70} className="h-1.5 bg-fitness-black" />
-                    
-                    <div className="flex justify-between items-center">
-                      <div className="text-sm">Achievements Unlocked</div>
-                      <div className="text-sm font-medium">{stats.achievements}/20</div>
-                    </div>
-                    <Progress value={35} className="h-1.5 bg-fitness-black" />
+                    <Progress value={Math.min(100, stats.totalReps / 5)} className="h-1.5 bg-fitness-black" />
                     
                     <div className="flex justify-between items-center">
                       <div className="text-sm">Workout Frequency</div>
@@ -728,12 +695,12 @@ const Profile = () => {
                           <div className="font-medium">{workout.duration}</div>
                         </div>
                         <div className="text-center">
-                          <div className="text-xs text-fitness-gray">Calories</div>
-                          <div className="font-medium">{workout.calories}</div>
+                          <div className="text-xs text-fitness-gray">Reps</div>
+                          <div className="font-medium">{workout.reps}</div>
                         </div>
                         <div className="text-center">
-                          <div className="text-xs text-fitness-gray">Exercises</div>
-                          <div className="font-medium">{workout.exercises}</div>
+                          <div className="text-xs text-fitness-gray">Form</div>
+                          <div className="font-medium">{workout.form}</div>
                         </div>
                       </div>
                       
