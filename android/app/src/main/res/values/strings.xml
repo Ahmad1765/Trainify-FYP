@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">TRAINIFY</string>
+    <string name="title_activity_main">TRAINIFY</string>
+    <string name="package_name">com.TRAINIFY.app</string>
+    <string name="custom_url_scheme">com.TRAINIFY.app</string>
+</resources>
