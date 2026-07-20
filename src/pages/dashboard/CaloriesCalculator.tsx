@@ -1,5 +1,12 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import DashboardLayout from "@/components/layout/DashboardLayout";
+import { computeCalories } from "@/lib/calories";
+import {
+  useCalorieEntries,
+  useCreateCalorieEntry,
+  useDeleteCalorieEntry,
+} from "@/hooks/useCalories";
+import type { CalorieEntryView } from "@/services/calories.service";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -33,27 +40,16 @@ const CaloriesCalculator = () => {
     target: number;
   } | null>(null);
   
-  const [savedCalculations, setSavedCalculations] = useState<any[]>([]);
-  const [history, setHistory] = useState<any[]>([]);
   const [nutritionModal, setNutritionModal] = useState(false);
   const [activeTab, setActiveTab] = useState("calculator");
-  
-  // Load from localStorage on mount
-  useEffect(() => {
-    const saved = localStorage.getItem("calorie_saved");
-    const hist = localStorage.getItem("calorie_history");
-    if (saved) setSavedCalculations(JSON.parse(saved));
-    if (hist) setHistory(JSON.parse(hist));
-  }, []);
-  
-  // Save to localStorage on change
-  useEffect(() => {
-    localStorage.setItem("calorie_saved", JSON.stringify(savedCalculations));
-  }, [savedCalculations]);
-  
-  useEffect(() => {
-    localStorage.setItem("calorie_history", JSON.stringify(history));
-  }, [history]);
+
+  // Persisted in Supabase. The two tabs (Saved / History) render the same
+  // append-only log; legacy localStorage entries are imported once by the hook.
+  const { data: entries = [] } = useCalorieEntries();
+  const savedCalculations = entries;
+  const history = entries;
+  const createEntry = useCreateCalorieEntry();
+  const deleteEntry = useDeleteCalorieEntry();
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const { name, value } = e.target;
@@ -65,81 +61,65 @@ const CaloriesCalculator = () => {
   
   const handleCalculate = (e: React.FormEvent) => {
     e.preventDefault();
-    
-    // Parse inputs
-    const age = parseInt(formData.age);
-    const weight = parseFloat(formData.weight); // in kg
-    const height = parseFloat(formData.height); // in cm
-    
-    // Validation
-    if (isNaN(age) || isNaN(weight) || isNaN(height)) {
-      return; // Don't calculate if inputs are invalid
-    }
-    
-    // BMR Calculation (Mifflin-St Jeor Equation)
-    let bmr;
-    if (formData.gender === "male") {
-      bmr = 10 * weight + 6.25 * height - 5 * age + 5;
-    } else {
-      bmr = 10 * weight + 6.25 * height - 5 * age - 161;
-    }
-    
-    // Activity Multiplier
-    const activityMultipliers: Record<string, number> = {
-      sedentary: 1.2, // Little or no exercise
-      light: 1.375, // Light exercise 1-3 days/week
-      moderate: 1.55, // Moderate exercise 3-5 days/week
-      active: 1.725, // Active 6-7 days/week
-      veryActive: 1.9, // Very active (physical job or 2x training)
-    };
-    
-    const tdee = bmr * activityMultipliers[formData.activityLevel];
-    
-    // Calculate target calories based on goal
-    let targetCalories = tdee;
-    if (formData.goal === "lose") {
-      targetCalories = tdee - 500; // 500 calorie deficit for weight loss
-    } else if (formData.goal === "gain") {
-      targetCalories = tdee + 500; // 500 calorie surplus for weight gain
-    }
-    
-    setCalculationResult({
-      bmr: Math.round(bmr),
-      tdee: Math.round(tdee),
-      target: Math.round(targetCalories),
+
+    // Math lives in a pure, unit-tested module now (src/lib/calories.ts).
+    const result = computeCalories({
+      age: parseInt(formData.age),
+      gender: formData.gender,
+      weightKg: parseFloat(formData.weight),
+      heightCm: parseFloat(formData.height),
+      activityLevel: formData.activityLevel,
+      goal: formData.goal,
     });
+    if (!result) return; // invalid inputs
+    setCalculationResult(result);
   };
 
-  // Save Result
-  const handleSaveResult = () => {
+  // Save Result — persists to Supabase
+  const handleSaveResult = async () => {
     if (!calculationResult) return;
-    const entry = {
-      ...formData,
-      ...calculationResult,
-      date: new Date().toISOString(),
-    };
-    setSavedCalculations([entry, ...savedCalculations]);
-    setHistory([entry, ...history]);
-    toast({ title: "Results Saved", description: "Your calculation has been saved." });
+    try {
+      await createEntry.mutateAsync({
+        age: parseInt(formData.age),
+        gender: formData.gender,
+        weightKg: parseFloat(formData.weight),
+        heightCm: parseFloat(formData.height),
+        activityLevel: formData.activityLevel,
+        goal: formData.goal,
+        bmr: calculationResult.bmr,
+        tdee: calculationResult.tdee,
+        target: calculationResult.target,
+      });
+      toast({ title: "Results Saved", description: "Your calculation has been saved." });
+    } catch (error) {
+      toast({
+        title: "Could not save",
+        description: error instanceof Error ? error.message : "Please try again.",
+        variant: "destructive",
+      });
+    }
   };
-  
-  // Delete Saved
-  const handleDeleteSaved = (idx: number) => {
-    setSavedCalculations(savedCalculations.filter((_, i) => i !== idx));
+
+  // Both tabs render the same log, so a delete from either removes the DB row.
+  const handleDelete = async (id: string) => {
+    try {
+      await deleteEntry.mutateAsync(id);
+    } catch (error) {
+      toast({
+        title: "Could not delete",
+        description: error instanceof Error ? error.message : "Please try again.",
+        variant: "destructive",
+      });
+    }
   };
-  
-  // Delete History
-  const handleDeleteHistory = (idx: number) => {
-    setHistory(history.filter((_, i) => i !== idx));
-  };
-  
+
   // Load Saved
-  const handleLoadSaved = (entry: any) => {
+  const handleLoadSaved = (entry: CalorieEntryView) => {
     setFormData({
-      age: entry.age,
+      age: String(entry.age),
       gender: entry.gender,
-      weight: entry.weight,
-      height: entry.height,
+      weight: String(entry.weight),
+      height: String(entry.height),
       activityLevel: entry.activityLevel,
       goal: entry.goal,
     });
@@ -496,7 +476,7 @@ const CaloriesCalculator = () => {
                       </div>
                       <div className="flex gap-2">
                         <Button size="sm" variant="outline" className="border-fitness-dark-gray" onClick={() => handleLoadSaved(entry)}>Load</Button>
-                        <Button size="sm" variant="destructive" onClick={() => handleDeleteSaved(idx)}>Delete</Button>
+                        <Button size="sm" variant="destructive" onClick={() => handleDelete(entry.id)}>Delete</Button>
                       </div>
                     </CardContent>
                   </Card>
@@ -528,7 +508,7 @@ const CaloriesCalculator = () => {
                       </div>
                       <div className="flex gap-2">
                         <Button size="sm" variant="outline" className="border-fitness-dark-gray" onClick={() => handleLoadSaved(entry)}>Load</Button>
-                        <Button size="sm" variant="destructive" onClick={() => handleDeleteHistory(idx)}>Delete</Button>
+                        <Button size="sm" variant="destructive" onClick={() => handleDelete(entry.id)}>Delete</Button>
                       </div>
                     </CardContent>
                   </Card>
