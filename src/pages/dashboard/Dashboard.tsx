@@ -3,6 +3,7 @@ import React from "react";
 import { Link } from "react-router-dom";
 import DashboardLayout from "@/components/layout/DashboardLayout";
 import { useAuth } from "@/contexts/AuthContext";
+import { useProfile, displayNameOf } from "@/hooks/useProfile";
 import { Button } from "@/components/ui/button";
 import { ArrowRight, Clock, Calendar, Activity, ChevronRight, Trophy, Video, Camera, Dumbbell, Calculator, Utensils } from "lucide-react";
 import { Progress } from "@/components/ui/progress";
@@ -21,6 +22,7 @@ const upcomingWorkouts = [
 
 const Dashboard = () => {
   const { user } = useAuth();
+  const { data: profile } = useProfile();
   const today = new Date();
   const formattedDate = today.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
 
@@ -31,7 +33,7 @@ const Dashboard = () => {
         <div className="flex flex-col md:flex-row justify-between items-start md:items-center">
           <div>
             <h1 className="text-3xl font-bold">
- Welcome back, {user?.displayName?.split(' ')[0] || user?.email || "Guest"}
+ Welcome back, {displayNameOf(profile, user?.email).split(' ')[0]}
 
 </h1>
 

@@ -2,6 +2,7 @@
 import { useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
+import { useProfile, displayNameOf } from "@/hooks/useProfile";
 import {
   Home,
   Video,
@@ -23,17 +24,28 @@ interface DashboardLayoutProps {
 
 const DashboardLayout: React.FC<DashboardLayoutProps> = ({ children }) => {
   const { user, logout } = useAuth();
+  const { data: profile } = useProfile();
   const location = useLocation();
   const navigate = useNavigate();
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
-  const handleLogout = () => {
-    logout();
-    toast({
-      title: "Logged out",
-      description: "You have been successfully logged out.",
-    });
-    navigate("/login");
+  // Previously fire-and-forget: the toast and redirect ran before signOut
+  // resolved, so a failed logout still claimed success.
+  const handleLogout = async () => {
+    try {
+      await logout();
+      toast({
+        title: "Logged out",
+        description: "You have been successfully logged out.",
+      });
+      navigate("/login");
+    } catch (error) {
+      toast({
+        title: "Logout failed",
+        description: error instanceof Error ? error.message : "Please try again.",
+        variant: "destructive",
+      });
+    }
   };
 
   const navItems = [
@@ -102,9 +114,9 @@ const DashboardLayout: React.FC<DashboardLayoutProps> = ({ children }) => {
           {/* User profile */}
           <div className="p-4 border-t border-fitness-dark-gray">
             <div className="flex items-center">
-              {user?.profilePicture ? (
+              {profile?.avatar_url ? (
                 <img
-                  src={user.profilePicture}
+                  src={profile.avatar_url}
                   alt="Profile"
                   className="h-10 w-10 rounded-full border-2 border-fitness-green object-cover"
                 />
@@ -114,7 +126,9 @@ const DashboardLayout: React.FC<DashboardLayoutProps> = ({ children }) => {
                 </div>
               )}
               <div className="ml-3">
-                <p className="text-sm font-medium text-white">{user?.name || "User"}</p>
+                <p className="text-sm font-medium text-white">
+                  {displayNameOf(profile, user?.email)}
+                </p>
                 <button
                   onClick={handleLogout}
                   className="text-xs text-fitness-green flex items-center mt-1 hover:underline"

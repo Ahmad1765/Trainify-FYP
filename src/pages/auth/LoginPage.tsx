@@ -5,31 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Eye, EyeOff, ArrowLeft } from "lucide-react";
-
-import { initializeApp } from "firebase/app";
-import {
-  getAuth,
-  signInWithEmailAndPassword,
-  signInWithPopup,
-  GoogleAuthProvider,
-  sendPasswordResetEmail,
-} from "firebase/auth";
-
-// Your Firebase config
-const firebaseConfig = {
-  apiKey: "AIzaSyCRh6pWku8NKqOcLit0XO0kJHBo3NZePQk",
-  authDomain: "trainify-6e4f3.firebaseapp.com",
-  projectId: "trainify-6e4f3",
-  storageBucket: "trainify-6e4f3.appspot.com",
-  messagingSenderId: "385251908885",
-  appId: "1:385251908885:web:6b83fc7d1ee014b7d79d1c",
-  measurementId: "G-DGX9W0527X",
-};
-
-// Initialize Firebase app
-const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
-const googleProvider = new GoogleAuthProvider();
+import { useAuth } from "@/contexts/AuthContext";
 
 const LoginPage = () => {
   const [email, setEmail] = useState("");
@@ -37,6 +13,10 @@ const LoginPage = () => {
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const navigate = useNavigate();
+  // This page used to stand up its own Firebase app and call the auth SDK
+  // directly, bypassing the context entirely. Everything now goes through
+  // useAuth() so there is exactly one auth client and one error mapper.
+  const { signIn, signInWithGoogle, resetPassword } = useAuth();
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -53,7 +33,7 @@ const LoginPage = () => {
     setIsLoading(true);
 
     try {
-      await signInWithEmailAndPassword(auth, email, password);
+      await signIn(email, password);
       toast({
         title: "Login successful",
         description: "Welcome back to TRAINify!",
@@ -76,12 +56,9 @@ const LoginPage = () => {
   const handleGoogleLogin = async () => {
     setIsLoading(true);
     try {
-      await signInWithPopup(auth, googleProvider);
-      toast({
-        title: "Login successful",
-        description: "Welcome back to TRAINify!",
-      });
-      navigate("/dashboard");
+      // Redirects to Google and returns to /dashboard; the toast and navigate
+      // that used to follow here never ran anyway under a redirect flow.
+      await signInWithGoogle();
     } catch (error) {
       toast({
         title: "Google login failed",
@@ -105,7 +82,7 @@ const LoginPage = () => {
     }
 
     try {
-      await sendPasswordResetEmail(auth, email);
+      await resetPassword(email);
       toast({
         title: "Password reset email sent",
         description: "Please check your email for password reset instructions.",

@@ -1,6 +1,8 @@
 
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import DashboardLayout from "@/components/layout/DashboardLayout";
+import { toast } from "@/components/ui/use-toast";
+import { useProfile, useUpdateProfile, useUploadAvatar, displayNameOf } from "@/hooks/useProfile";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -41,16 +43,34 @@ import { Switch } from "@/components/ui/switch";
 
 const Profile = () => {
   const { user } = useAuth();
+  const { data: profile } = useProfile();
+  const updateProfile = useUpdateProfile();
+  const uploadAvatar = useUploadAvatar();
+  const avatarInputRef = useRef<HTMLInputElement>(null);
   const [isEditing, setIsEditing] = useState(false);
   const [profileForm, setProfileForm] = useState({
-    name: user?.name || "",
+    name: "",
     email: user?.email || "",
-    bio: "Fitness enthusiast focused on strength training and calisthenics. Working towards my first muscle-up!",
-    height: "178",
-    weight: "75",
-    age: "32",
+    bio: "",
+    height: "",
+    weight: "",
+    age: "",
   });
-  
+
+  // The profile arrives asynchronously, so seed the form once it lands (and
+  // again if it changes) rather than only at first render.
+  useEffect(() => {
+    if (!profile) return;
+    setProfileForm({
+      name: profile.display_name ?? "",
+      email: user?.email ?? "",
+      bio: profile.bio ?? "",
+      height: profile.height_cm != null ? String(profile.height_cm) : "",
+      weight: profile.weight_kg != null ? String(profile.weight_kg) : "",
+      age: profile.age != null ? String(profile.age) : "",
+    });
+  }, [profile, user?.email]);
+
   const handleProfileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const { name, value } = e.target;
     setProfileForm({
@@ -58,11 +78,43 @@ const Profile = () => {
       [name]: value,
     });
   };
-  
-  const handleSaveProfile = (e: React.FormEvent) => {
+
+  const handleSaveProfile = async (e: React.FormEvent) => {
     e.preventDefault();
-    setIsEditing(false);
-    // In a real app, you would save this to a backend
+    try {
+      await updateProfile.mutateAsync({
+        display_name: profileForm.name.trim() || null,
+        bio: profileForm.bio.trim() || null,
+        height_cm: profileForm.height ? Number(profileForm.height) : null,
+        weight_kg: profileForm.weight ? Number(profileForm.weight) : null,
+        age: profileForm.age ? Number(profileForm.age) : null,
+      });
+      setIsEditing(false);
+      toast({ title: "Profile saved", description: "Your changes have been saved." });
+    } catch (error) {
+      toast({
+        title: "Could not save profile",
+        description: error instanceof Error ? error.message : "Please try again.",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const handleAvatarChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      await uploadAvatar.mutateAsync(file);
+      toast({ title: "Photo updated" });
+    } catch (error) {
+      toast({
+        title: "Upload failed",
+        description: error instanceof Error ? error.message : "Please try again.",
+        variant: "destructive",
+      });
+    } finally {
+      e.target.value = ""; // allow re-picking the same file
+    }
   };
   
   // Sample statistics data
@@ -141,9 +193,9 @@ const Profile = () => {
                 <CardHeader className="pb-4">
                   <div className="flex justify-center">
                     <div className="relative">
-                      {user?.profilePicture ? (
+                      {profile?.avatar_url ? (
                         <img
-                          src={user.profilePicture}
+                          src={profile.avatar_url}
                           alt="Profile"
                           className="h-32 w-32 rounded-full border-4 border-fitness-green object-cover"
                         />
@@ -152,8 +204,19 @@ const Profile = () => {
                           <User size={64} className="text-fitness-gray" />
                         </div>
                       )}
-                      <Button 
-                        size="icon" 
+                      <input
+                        ref={avatarInputRef}
+                        type="file"
+                        accept="image/*"
+                        className="hidden"
+                        onChange={handleAvatarChange}
+                      />
+                      <Button
+                        size="icon"
+                        type="button"
+                        onClick={() => avatarInputRef.current?.click()}
+                        disabled={uploadAvatar.isPending}
+                        aria-label="Upload profile photo"
                         className="absolute bottom-0 right-0 h-8 w-8 rounded-full bg-fitness-green text-black hover:bg-fitness-green/80"
                       >
                         <Upload size={14} />
@@ -161,7 +224,7 @@ const Profile = () => {
                     </div>
                   </div>
                   <div className="text-center mt-4">
-                    <CardTitle>{user?.name}</CardTitle>
+                    <CardTitle>{displayNameOf(profile, user?.email)}</CardTitle>
                     <CardDescription className="text-fitness-gray">
                       {user?.email}
                     </CardDescription>

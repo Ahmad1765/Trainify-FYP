@@ -8,31 +8,7 @@ import { toast } from "@/components/ui/use-toast";
 import { Eye, EyeOff, ArrowLeft, Check } from "lucide-react";
 import { FcGoogle } from "react-icons/fc";
 
-// Firebase imports
-import { initializeApp } from "firebase/app";
-import {
-  getAuth,
-  createUserWithEmailAndPassword,
-  updateProfile,
-  GoogleAuthProvider,
-  signInWithPopup,
-  onAuthStateChanged,
-} from "firebase/auth";
-
-// Firebase config
-const firebaseConfig = {
-  apiKey: "AIzaSyCRh6pWku8NKqOcLit0XO0kJHBo3NZePQk",
-  authDomain: "trainify-6e4f3.firebaseapp.com",
-  projectId: "trainify-6e4f3",
-  storageBucket: "trainify-6e4f3.appspot.com",
-  messagingSenderId: "385251908885",
-  appId: "1:385251908885:web:6b83fc7d1ee014b7d79d1c",
-  measurementId: "G-DGX9W0527X",
-};
-
-const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
-const googleProvider = new GoogleAuthProvider();
+import { useAuth } from "@/contexts/AuthContext";
 
 const RegisterPage = () => {
   const [name, setName] = useState("");
@@ -42,16 +18,13 @@ const RegisterPage = () => {
   const [agreed, setAgreed] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const navigate = useNavigate();
+  const { signUp, signInWithGoogle, user } = useAuth();
 
+  // Bounce an already-signed-in visitor straight to the dashboard. Reads the
+  // shared context instead of subscribing to its own auth listener.
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
-      if (user) {
-        console.log("Logged in user:", user.displayName);
-        navigate("/dashboard");
-      }
-    });
-    return unsubscribe;
-  }, [navigate]);
+    if (user) navigate("/dashboard");
+  }, [user, navigate]);
 
   const getPasswordStrength = () => {
     if (!password) return 0;
@@ -103,17 +76,30 @@ const RegisterPage = () => {
 
     setIsLoading(true);
     try {
-      const { user } = await createUserWithEmailAndPassword(auth, email, password);
-      await updateProfile(user, { displayName: name });
+      // display_name is passed through to the on_auth_user_created trigger,
+      // which seeds the profiles row — no follow-up profile write needed.
+      const { needsEmailConfirmation } = await signUp(email, password, name);
+
+      if (needsEmailConfirmation) {
+        // "Confirm email" is on, so there is no session yet. Sending the user
+        // to /dashboard here would just bounce them back to /login.
+        toast({
+          title: "Confirm your email",
+          description: `We sent a confirmation link to ${email}. Click it to finish signing up.`,
+        });
+        navigate("/login");
+        return;
+      }
+
       toast({
         title: "Account created",
         description: `Welcome to Trainify, ${name}!`,
       });
       navigate("/dashboard");
-    } catch (error: any) {
+    } catch (error) {
       toast({
         title: "Registration failed",
-        description: error.message,
+        description: error instanceof Error ? error.message : "Please try again.",
         variant: "destructive",
       });
     } finally {
@@ -124,19 +110,12 @@ const RegisterPage = () => {
   const handleGoogleSignIn = async () => {
     setIsLoading(true);
     try {
-      const result = await signInWithPopup(auth, googleProvider);
-      const user = result.user;
-
-      toast({
-        title: `Welcome ${user.displayName || "Guest"}`,
-        description: "Signed in with Google successfully!",
-      });
-
-      navigate("/dashboard");
-    } catch (error: any) {
+      // Redirects away to Google; nothing below this line runs on success.
+      await signInWithGoogle();
+    } catch (error) {
       toast({
         title: "Google Sign-In failed",
-        description: error.message,
+        description: error instanceof Error ? error.message : "Please try again.",
         variant: "destructive",
       });
     } finally {
