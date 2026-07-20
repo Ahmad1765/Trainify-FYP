@@ -11,7 +11,7 @@ export type Json = string | number | boolean | null | { [key: string]: Json } | 
 /** One day of a workout plan's schedule (stored inside the `schedule` JSONB). */
 export interface PlannedExercise {
   name: string;
-  sets: string;
+  sets: string | number; // the sample data uses numbers, the edit form strings
   reps: string;
   rest: string;
 }
@@ -23,17 +23,18 @@ export interface PlannedDay {
 }
 
 /** One meal in a diet plan (stored inside the `daily_meals` JSONB). */
-export interface PlannedMeal {
+export interface DietMeal {
   name: string;
-  time?: string;
   calories: number;
-  items: string[];
+  protein?: number;
+  carbs?: number;
+  fat?: number;
+  ingredients?: string[];
+  image?: string;
 }
 
-export interface PlannedMealGroup {
-  day: string;
-  meals: PlannedMeal[];
-}
+/** The page keys meals by type: { breakfast: [...], lunch: [...], ... }. */
+export type DietMeals = Record<string, DietMeal[]>;
 
 export interface Database {
   public: {
@@ -107,7 +108,7 @@ export interface Database {
           purpose: string | null;
           calorie_goal: number | null;
           restrictions: string[];
-          daily_meals: PlannedMealGroup[];
+          daily_meals: DietMeals;
           created_at: string;
           updated_at: string;
         };
@@ -117,7 +118,7 @@ export interface Database {
           purpose?: string | null;
           calorie_goal?: number | null;
           restrictions?: string[];
-          daily_meals?: PlannedMealGroup[];
+          daily_meals?: DietMeals;
         };
         Update: Partial<Database['public']['Tables']['diet_plans']['Insert']>;
         Relationships: [];

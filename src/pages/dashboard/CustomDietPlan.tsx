@@ -1,5 +1,7 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import DashboardLayout from "@/components/layout/DashboardLayout";
+import { toast } from "@/components/ui/use-toast";
+import { useRecentDietPlan, useCreateDietPlan } from "@/hooks/useDietPlans";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -278,7 +280,21 @@ const CustomDietPlan = () => {
   const [dietPurpose, setDietPurpose] = useState("weight-loss");
   const [restrictions, setRestrictions] = useState<string[]>([]);
   const [selectedPlan, setSelectedPlan] = useState<any>(null);
-  
+  const [dietPlanId, setDietPlanId] = useState<string | null>(null);
+
+  const { data: recentDiet } = useRecentDietPlan();
+  const createDiet = useCreateDietPlan();
+
+  // Load the saved diet plan on mount so it survives refresh.
+  useEffect(() => {
+    if (recentDiet && !dietPlanId) {
+      setSelectedPlan(recentDiet.daily_meals);
+      setDietPlanId(recentDiet.id);
+      if (recentDiet.purpose) setDietPurpose(recentDiet.purpose);
+      setStep(3);
+    }
+  }, [recentDiet, dietPlanId]);
+
   const handleRestrictionChange = (value: string) => {
     setRestrictions(
       restrictions.includes(value)
@@ -286,18 +302,34 @@ const CustomDietPlan = () => {
         : [...restrictions, value]
     );
   };
-  
-  const generateDietPlan = () => {
-    // In a real app, this would call an API to generate a personalized diet plan
-    // For this example, we'll use the sample meal plans
-    if (dietPurpose === "weight-loss") {
-      setSelectedPlan(mealPlans.weightLoss);
-    } else if (dietPurpose === "muscle-build") {
-      setSelectedPlan(mealPlans.muscleBuild);
-    } else if (dietPurpose === "maintenance") {
-      setSelectedPlan(mealPlans.maintenance);
-    }
+
+  const generateDietPlan = async () => {
+    // Pick the meal plan matching the questionnaire, then persist it.
+    const meals =
+      dietPurpose === "muscle-build"
+        ? mealPlans.muscleBuild
+        : dietPurpose === "maintenance"
+        ? mealPlans.maintenance
+        : mealPlans.weightLoss;
+    setSelectedPlan(meals);
     setStep(3);
+    try {
+      const saved = await createDiet.mutateAsync({
+        name: `${dietPurpose} plan`,
+        purpose: dietPurpose,
+        calorieGoal: calorieGoal ? Number(calorieGoal) : null,
+        restrictions,
+        meals,
+      });
+      setDietPlanId(saved.id);
+      toast({ title: "Diet plan saved", description: "Your diet plan has been saved." });
+    } catch (error) {
+      toast({
+        title: "Could not save diet plan",
+        description: error instanceof Error ? error.message : "Please try again.",
+        variant: "destructive",
+      });
+    }
   };
   
   // Helper function to calculate total calories for the daily plan

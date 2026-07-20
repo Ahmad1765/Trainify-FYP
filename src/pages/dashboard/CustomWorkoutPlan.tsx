@@ -1,5 +1,13 @@
 import { useState, useEffect } from "react";
 import DashboardLayout from "@/components/layout/DashboardLayout";
+import { toast } from "@/components/ui/use-toast";
+import {
+  useRecentWorkoutPlan,
+  useCreateWorkoutPlan,
+  useUpdatePlanSchedule,
+} from "@/hooks/useWorkoutPlans";
+import { scheduleToPlan, type DayKeyedPlan } from "@/services/workoutPlans.service";
+import { buildWorkoutPlan } from "@/lib/generatePlan";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -119,15 +127,60 @@ const CustomWorkoutPlan = () => {
   const [exerciseForm, setExerciseForm] = useState({ name: '', sets: '', reps: '', rest: '' });
   const [workoutSession, setWorkoutSession] = useState({ open: false, day: '', index: 0, started: false });
   const [plan, setPlan] = useState<any>(sampleWorkoutPlan);
+  const [planId, setPlanId] = useState<string | null>(null);
   const pdfRef = useRef<HTMLDivElement>(null);
-  
-  const generateWorkoutPlan = () => {
-    // In a real app, this would call an API to generate a personalized plan
-    // For this example, we'll use the sample plan
-    setGeneratedPlan(sampleWorkoutPlan);
+
+  const { data: recentPlan } = useRecentWorkoutPlan();
+  const createPlan = useCreateWorkoutPlan();
+  const updateSchedule = useUpdatePlanSchedule();
+
+  // Load the saved plan on mount so it survives refresh, instead of always
+  // showing the hardcoded sample.
+  useEffect(() => {
+    if (recentPlan && !planId) {
+      const loaded = scheduleToPlan(recentPlan.schedule);
+      setPlan(loaded);
+      setGeneratedPlan(loaded);
+      setPlanId(recentPlan.id);
+      setStep(3);
+    }
+  }, [recentPlan, planId]);
+
+  const generateWorkoutPlan = async () => {
+    // Generate a plan that reflects the questionnaire, then persist it.
+    const generated = buildWorkoutPlan({
+      daysPerWeek: daysPerWeek[0],
+      goal,
+      experienceLevel,
+    });
+    setGeneratedPlan(generated);
     setStep(3);
+    try {
+      const saved = await createPlan.mutateAsync({
+        name: `${goal || "Custom"} plan`,
+        goal,
+        daysPerWeek: daysPerWeek[0],
+        timePerSessionMin: timePerSession[0],
+        experienceLevel,
+        equipment,
+        plan: generated,
+      });
+      setPlanId(saved.id);
+      toast({ title: "Plan saved", description: "Your workout plan has been saved." });
+    } catch (error) {
+      toast({
+        title: "Could not save plan",
+        description: error instanceof Error ? error.message : "Please try again.",
+        variant: "destructive",
+      });
+    }
   };
-  
+
+  // Persist any edit to the current plan's exercises.
+  const persistPlan = (next: DayKeyedPlan) => {
+    if (planId) updateSchedule.mutate({ id: planId, plan: next });
+  };
+
   const workoutDays = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
   const selectedDays = workoutDays.slice(0, daysPerWeek[0]);
 
@@ -162,6 +215,7 @@ const CustomWorkoutPlan = () => {
     const updated = { ...plan };
     updated[exerciseModal.day][exerciseModal.index] = { ...exerciseForm };
     setPlan(updated);
+    persistPlan(updated);
     setExerciseModal({ open: false, day: '', index: -1, mode: 'view' });
   };
 
@@ -174,6 +228,7 @@ const CustomWorkoutPlan = () => {
     const updated = { ...plan };
     updated[exerciseModal.day].push({ ...exerciseForm });
     setPlan(updated);
+    persistPlan(updated);
     setExerciseModal({ open: false, day: '', index: -1, mode: 'view' });
   };
 
@@ -182,6 +237,7 @@ const CustomWorkoutPlan = () => {
     const updated = { ...plan };
     updated[day].splice(index, 1);
     setPlan(updated);
+    persistPlan(updated);
   };
 
   // View Details
