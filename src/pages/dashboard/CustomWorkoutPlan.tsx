@@ -677,8 +677,8 @@ const CustomWorkoutPlan = () => {
 
       {/* Exercise Modal */}
       {exerciseModal.open && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80">
-          <div className="bg-fitness-card-bg rounded-xl shadow-lg p-6 max-w-md w-full relative">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4">
+          <div className="bg-fitness-card-bg rounded-xl shadow-lg p-5 sm:p-6 max-w-md w-full relative max-h-[90vh] overflow-y-auto">
             <button className="absolute top-2 right-2 text-fitness-gray hover:text-fitness-green text-2xl" onClick={() => setExerciseModal({ open: false, day: '', index: -1, mode: 'view' })} aria-label="Close">&times;</button>
             <h3 className="text-lg font-bold mb-4">{exerciseModal.mode === 'add' ? 'Add Exercise' : exerciseModal.mode === 'edit' ? 'Edit Exercise' : 'Exercise Details'}</h3>
             <div className="space-y-4">
@@ -698,8 +698,8 @@ const CustomWorkoutPlan = () => {
 
       {/* Workout Session Modal */}
       {workoutSession.open && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80">
-          <div className="bg-fitness-card-bg rounded-xl shadow-lg p-6 max-w-md w-full relative">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4">
+          <div className="bg-fitness-card-bg rounded-xl shadow-lg p-5 sm:p-6 max-w-md w-full relative max-h-[90vh] overflow-y-auto">
             <button className="absolute top-2 right-2 text-fitness-gray hover:text-fitness-green text-2xl" onClick={handleEndWorkout} aria-label="Close">&times;</button>
             <h3 className="text-lg font-bold mb-4">Workout Session - {workoutSession.day.charAt(0).toUpperCase() + workoutSession.day.slice(1)}</h3>
             {plan[workoutSession.day] && plan[workoutSession.day][workoutSession.index] ? (

@@ -68,7 +68,7 @@ const DashboardLayout: React.FC<DashboardLayoutProps> = ({ children }) => {
     <div className="flex h-[100dvh] overflow-hidden bg-fitness-background">
       {/* Mobile menu button */}
       <button
-        className="fixed left-4 top-4 z-50 rounded-lg border border-white/10 bg-fitness-card-bg/90 p-2 text-white backdrop-blur transition-colors hover:border-fitness-green/40 md:hidden"
+        className="fixed left-[max(1rem,env(safe-area-inset-left))] top-[max(1rem,env(safe-area-inset-top))] z-50 rounded-lg border border-white/10 bg-fitness-card-bg/90 p-2 text-white backdrop-blur transition-colors hover:border-fitness-green/40 md:hidden"
         onClick={() => setSidebarOpen(!sidebarOpen)}
         aria-label={sidebarOpen ? "Close menu" : "Open menu"}
       >
@@ -88,7 +88,7 @@ const DashboardLayout: React.FC<DashboardLayoutProps> = ({ children }) => {
       {/* Sidebar */}
       <aside
         className={cn(
-          "fixed inset-y-0 left-0 z-40 flex w-[264px] transform flex-col border-r border-white/[0.06] bg-sidebar transition-transform duration-300 ease-in-out md:relative md:translate-x-0",
+          "fixed inset-y-0 left-0 z-40 flex w-[264px] transform flex-col border-r border-white/[0.06] bg-sidebar pt-safe pb-safe pl-safe transition-transform duration-300 ease-in-out md:relative md:translate-x-0",
           sidebarOpen ? "translate-x-0" : "-translate-x-full md:translate-x-0"
         )}
       >
@@ -165,7 +165,10 @@ const DashboardLayout: React.FC<DashboardLayoutProps> = ({ children }) => {
       </aside>
 
       {/* Main content */}
-      <main className="flex-1 overflow-y-auto bg-fitness-background px-5 py-6 pt-16 md:p-8 md:pt-8">
+      {/* Mobile: top padding clears the safe-area inset plus the floating menu
+          button so content never hides under the status bar / notch. Desktop
+          resets to a uniform pad since the sidebar is static there. */}
+      <main className="flex-1 overflow-y-auto bg-fitness-background px-5 py-6 pt-[calc(env(safe-area-inset-top)_+_4rem)] md:p-8 md:pt-8">
         <div className="mx-auto max-w-6xl animate-fade-in">{children}</div>
       </main>
     </div>

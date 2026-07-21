@@ -12,7 +12,7 @@
  * view-independent body-line (hip) check applies.
  */
 
-import { confidentKeypoint, distance, shoulderWidth, type Keypoints } from './poseGeometry';
+import { confidentKeypoint, distance, shoulderWidth, MIN_KEYPOINT_SCORE, type Keypoints } from './poseGeometry';
 
 export interface Vec2 {
   x: number;
@@ -141,4 +141,42 @@ export function getCorrections(exerciseId: string, kp: Keypoints): Correction[] 
   }
 
   return out;
+}
+
+/**
+ * Exercises whose form {@link getCorrections} can actually assess. Anything else
+ * yields a null (unknown) verdict so the badge hides rather than implying a
+ * hollow "good form" for an exercise we have no form rules for.
+ */
+const ASSESSABLE = new Set<string>([...PRONE, ...ARM_TUCK, ...SQUAT, ...PRESS, ...RAISE]);
+
+/** How many keypoints must be confidently visible before we judge form at all. */
+const MIN_VISIBLE_JOINTS = 6;
+
+/**
+ * Whole-body form verdict for the badge + skeleton colour, derived from the SAME
+ * fault detector that draws the on-camera arrows ({@link getCorrections}). This
+ * is the fix for the "red even with correct form" bug: the verdict reflects
+ * actual, position-independent faults (hip sag, elbow flare, knee cave…), NOT
+ * whether the body is at peak contraction — so it no longer flips red at the top
+ * or bottom of an otherwise-correct rep.
+ *
+ * Returns:
+ *  - `true`  — the person is clearly in frame and no fault is detected,
+ *  - `false` — at least one correction applies (a real fault),
+ *  - `null`  — can't judge (too little of the body visible, or this exercise has
+ *              no form rules), so the caller should hide the badge.
+ *
+ * Pass `corrections` to reuse an already-computed result and avoid recomputing.
+ */
+export function assessForm(
+  exerciseId: string,
+  kp: Keypoints,
+  corrections?: Correction[],
+): boolean | null {
+  if (!ASSESSABLE.has(exerciseId)) return null;
+  const visible = kp.reduce((n, k) => n + ((k.score ?? 0) >= MIN_KEYPOINT_SCORE ? 1 : 0), 0);
+  if (visible < MIN_VISIBLE_JOINTS) return null;
+  const faults = corrections ?? getCorrections(exerciseId, kp);
+  return faults.length === 0;
 }

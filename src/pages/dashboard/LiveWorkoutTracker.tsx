@@ -1,5 +1,6 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import DashboardLayout from "@/components/layout/DashboardLayout";
+import { useIsMobile } from "@/hooks/use-mobile";
 import Webcam from "react-webcam";
 import * as poseDetection from "@tensorflow-models/pose-detection";
 import * as tf from "@tensorflow/tfjs";
@@ -42,8 +43,9 @@ import {
 import { toast } from "@/components/ui/use-toast";
 import { RepCounter, getRepSpec, type RepSpec } from "@/lib/repCounter";
 import { confidentKeypoint, MIN_KEYPOINT_SCORE, type Keypoints } from "@/lib/poseGeometry";
+import { KeypointSmoother } from "@/lib/poseSmoothing";
 import { getCoaching, getFocusJoints } from "@/lib/formFeedback";
-import { getCorrections, type Correction } from "@/lib/formCorrection";
+import { getCorrections, assessForm, type Correction } from "@/lib/formCorrection";
 import { useCreateWorkoutSession } from "@/hooks/useWorkoutSessions";
 
 // Sample workout data
@@ -407,6 +409,19 @@ const WORKOUTS = [
 const LiveWorkoutTracker = () => {
   const webcamRef = useRef<Webcam>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const isMobile = useIsMobile();
+
+  // On phones the frame is displayed portrait (a standing body barely fits a
+  // 16:9 strip), so request a portrait stream to match; desktops keep 16:9.
+  // If the camera ignores the request, the overlay canvas is object-cover too,
+  // so the skeleton still crops-to-cover in lockstep with the video (aligned).
+  const videoConstraints = useMemo(
+    () =>
+      isMobile
+        ? { width: { ideal: 720 }, height: { ideal: 960 }, facingMode: "user" as const }
+        : { width: { ideal: 1280 }, height: { ideal: 720 }, aspectRatio: 16 / 9, facingMode: "user" as const },
+    [isMobile]
+  );
   const [isModelLoading, setIsModelLoading] = useState(true);
   const [isWebcamActive, setIsWebcamActive] = useState(false);
   const [detector, setDetector] = useState<poseDetection.PoseDetector | null>(null);
@@ -423,6 +438,11 @@ const LiveWorkoutTracker = () => {
   const strictFormRef = useRef(false);
   useEffect(() => { strictFormRef.current = strictForm; }, [strictForm]);
   const requestAnimationRef = useRef<number | null>(null);
+
+  // Speed-adaptive smoother for the drawn skeleton + geometry, so the overlay
+  // stops shimmering on MoveNet's per-frame keypoint jitter. Reset on start /
+  // reset / exercise switch so it never lerps from stale positions.
+  const smootherRef = useRef(new KeypointSmoother());
 
   // Rep-counting state machine + session bookkeeping.
   const repCounterRef = useRef<{ counter: RepCounter; spec: RepSpec } | null>(null);
@@ -475,9 +495,11 @@ const LiveWorkoutTracker = () => {
         await tf.setBackend("webgl").catch(() => undefined);
         await tf.ready();
 
-        // MoveNet Lightning: fast (>50 FPS), so the skeleton tracks smoothly and
-        // the tracker feels responsive on any machine. enableSmoothing applies
-        // MoveNet's built-in temporal filter on top of our own EMA/debounce.
+        // MoveNet Lightning: fast (>50 FPS), so the tracker feels responsive on
+        // any machine. enableSmoothing applies MoveNet's built-in temporal
+        // filter; we additionally run a speed-adaptive One-Euro filter
+        // (KeypointSmoother) on the keypoints, which is what actually steadies
+        // the drawn skeleton, plus the rep-signal EMA and the form debounce.
         const detectorConfig = {
           modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING,
           enableSmoothing: true,
@@ -566,6 +588,7 @@ const LiveWorkoutTracker = () => {
       sessionStartRef.current = Date.now();
       formFramesRef.current = { good: 0, total: 0 };
       resetFormSmoothing();
+      smootherRef.current.reset();
       setIsGoodForm(null);
       setRepCount(0);
     }
@@ -579,6 +602,7 @@ const LiveWorkoutTracker = () => {
     sessionStartRef.current = Date.now();
     formFramesRef.current = { good: 0, total: 0 };
     resetFormSmoothing();
+    smootherRef.current.reset();
   };
 
   // Persist the just-finished session (if it has anything worth recording).
@@ -726,6 +750,7 @@ const LiveWorkoutTracker = () => {
     sessionStartRef.current = Date.now();
     formFramesRef.current = { good: 0, total: 0 };
     resetFormSmoothing();
+    smootherRef.current.reset();
     if (!isPausedRef.current && isWebcamActive) {
       if (requestAnimationRef.current) {
         cancelAnimationFrame(requestAnimationRef.current);
@@ -734,410 +759,20 @@ const LiveWorkoutTracker = () => {
     }
   };
 
-  // Analyze the pose and determine if the form is correct
-  const analyzePose = (pose: poseDetection.Pose) => {
-    if (!pose || !pose.keypoints || pose.keypoints.length === 0) {
-      return null;
-    }
-    const keypoints = pose.keypoints;
-    // Presence gate: don't demand the *whole* body be visible (an upper-body
-    // exercise legitimately has the legs off-frame). Just require enough
-    // confident keypoints to know a person is really there.
-    const confidentCount = keypoints.filter((kp) => (kp.score ?? 0) >= MIN_KEYPOINT_SCORE).length;
-    if (confidentCount < 4) {
-      return null;
-    }
-    // Confidence-gated getter: an occluded/low-confidence joint reads as
-    // "not seen" so a case's checks skip rather than act on noisy coordinates.
-    const get = (name: string) => confidentKeypoint(keypoints as Keypoints, name);
-    // Shoulder-width scale so pixel distance checks stop depending on how far
-    // the user stands from the camera / the video resolution. `rel(px)` converts
-    // an old constant (tuned at ~160px shoulder width) into the equivalent
-    // fraction of the current shoulder width, preserving behaviour at that
-    // reference framing while scaling everywhere else. Falls back to the raw
-    // pixel value if shoulders aren't both visible.
-    const _ls = get('left_shoulder');
-    const _rs = get('right_shoulder');
-    const _shoulderW = _ls && _rs ? Math.hypot(_ls.x - _rs.x, _ls.y - _rs.y) : 0;
-    const rel = (px: number) => (_shoulderW > 0 ? (px / 160) * _shoulderW : px);
-    // Helper to calculate angle between three points
-    const angle = (a: any, b: any, c: any) => {
-      if (!a || !b || !c) return null;
-      const ab = { x: a.x - b.x, y: a.y - b.y };
-      const cb = { x: c.x - b.x, y: c.y - b.y };
-      const dot = ab.x * cb.x + ab.y * cb.y;
-      const magAB = Math.sqrt(ab.x * ab.x + ab.y * ab.y);
-      const magCB = Math.sqrt(cb.x * cb.x + cb.y * cb.y);
-      if (magAB === 0 || magCB === 0) return null;
-      let theta = Math.acos(dot / (magAB * magCB));
-      return theta * (180 / Math.PI);
-    };
-    // Helper to check vertical distance (for crunches, etc)
-    const verticalDist = (a: any, b: any) => a && b ? Math.abs(a.y - b.y) : null;
-    // Helper to check horizontal distance (for rows, etc)
-    const horizontalDist = (a: any, b: any) => a && b ? Math.abs(a.x - b.x) : null;
-    switch (selectedWorkoutRef.current.id) {
-      // CHEST
-      case 'push-ups': {
-        const leftShoulder = get('left_shoulder');
-        const leftElbow = get('left_elbow');
-        const leftWrist = get('left_wrist');
-        const rightShoulder = get('right_shoulder');
-        const rightElbow = get('right_elbow');
-        const rightWrist = get('right_wrist');
-        const leftAngle = angle(leftShoulder, leftElbow, leftWrist);
-        const rightAngle = angle(rightShoulder, rightElbow, rightWrist);
-        if (leftAngle && rightAngle) {
-          return leftAngle > 60 && leftAngle < 100 && rightAngle > 60 && rightAngle < 100;
-        }
-        break;
-      }
-      case 'incline-push-ups': {
-        // Similar to push-ups, but hips should be higher than shoulders
-        const leftShoulder = get('left_shoulder');
-        const leftElbow = get('left_elbow');
-        const leftWrist = get('left_wrist');
-        const rightShoulder = get('right_shoulder');
-        const rightElbow = get('right_elbow');
-        const rightWrist = get('right_wrist');
-        const leftHip = get('left_hip');
-        const rightHip = get('right_hip');
-        const leftAngle = angle(leftShoulder, leftElbow, leftWrist);
-        const rightAngle = angle(rightShoulder, rightElbow, rightWrist);
-        if (leftAngle && rightAngle && leftHip && rightHip && leftShoulder && rightShoulder) {
-          const hipsAboveShoulders = leftHip.y < leftShoulder.y && rightHip.y < rightShoulder.y;
-          return leftAngle > 60 && leftAngle < 100 && rightAngle > 60 && rightAngle < 100 && hipsAboveShoulders;
-        }
-        break;
-      }
-      case 'decline-push-ups': {
-        // Similar to push-ups, but hips should be lower than shoulders
-        const leftShoulder = get('left_shoulder');
-        const leftElbow = get('left_elbow');
-        const leftWrist = get('left_wrist');
-        const rightShoulder = get('right_shoulder');
-        const rightElbow = get('right_elbow');
-        const rightWrist = get('right_wrist');
-        const leftHip = get('left_hip');
-        const rightHip = get('right_hip');
-        const leftAngle = angle(leftShoulder, leftElbow, leftWrist);
-        const rightAngle = angle(rightShoulder, rightElbow, rightWrist);
-        if (leftAngle && rightAngle && leftHip && rightHip && leftShoulder && rightShoulder) {
-          const hipsBelowShoulders = leftHip.y > leftShoulder.y && rightHip.y > rightShoulder.y;
-          return leftAngle > 60 && leftAngle < 100 && rightAngle > 60 && rightAngle < 100 && hipsBelowShoulders;
-        }
-        break;
-      }
-      case 'chest-dips': {
-        // Elbow angle < 90, torso leans forward
-        const leftShoulder = get('left_shoulder');
-        const leftElbow = get('left_elbow');
-        const leftWrist = get('left_wrist');
-        const rightShoulder = get('right_shoulder');
-        const rightElbow = get('right_elbow');
-        const rightWrist = get('right_wrist');
-        const leftAngle = angle(leftShoulder, leftElbow, leftWrist);
-        const rightAngle = angle(rightShoulder, rightElbow, rightWrist);
-        if (leftAngle && rightAngle && leftShoulder && rightShoulder) {
-          const torsoLean = Math.abs(leftShoulder.x - rightShoulder.x) > rel(40); // crude lean check
-          return leftAngle < 100 && rightAngle < 100 && torsoLean;
-        }
-        break;
-      }
-      // BACK
-      case 'pull-ups':
-      case 'chin-ups': {
-        // Elbows below shoulders, wrists above elbows
-        const leftShoulder = get('left_shoulder');
-        const leftElbow = get('left_elbow');
-        const leftWrist = get('left_wrist');
-        const rightShoulder = get('right_shoulder');
-        const rightElbow = get('right_elbow');
-        const rightWrist = get('right_wrist');
-        if (leftShoulder && leftElbow && leftWrist && rightShoulder && rightElbow && rightWrist) {
-          const leftGood = leftWrist.y < leftElbow.y && leftElbow.y < leftShoulder.y;
-          const rightGood = rightWrist.y < rightElbow.y && rightElbow.y < rightShoulder.y;
-          return leftGood && rightGood;
-        }
-        break;
-      }
-      case 'inverted-rows': {
-        // Shoulders and hips should be in line, elbows bent
-        const leftShoulder = get('left_shoulder');
-        const rightShoulder = get('right_shoulder');
-        const leftHip = get('left_hip');
-        const rightHip = get('right_hip');
-        const leftElbow = get('left_elbow');
-        const rightElbow = get('right_elbow');
-        if (leftShoulder && rightShoulder && leftHip && rightHip && leftElbow && rightElbow) {
-          const bodyStraight = Math.abs(leftShoulder.y - leftHip.y) < rel(40) && Math.abs(rightShoulder.y - rightHip.y) < rel(40);
-          const elbowsBent = leftElbow.y < leftShoulder.y && rightElbow.y < rightShoulder.y;
-          return bodyStraight && elbowsBent;
-        }
-        break;
-      }
-      // SHOULDERS
-      case 'shoulder-press': {
-        // Elbow below shoulder at bottom, arms straight at top
-        const leftShoulder = get('left_shoulder');
-        const leftElbow = get('left_elbow');
-        const leftWrist = get('left_wrist');
-        const rightShoulder = get('right_shoulder');
-        const rightElbow = get('right_elbow');
-        const rightWrist = get('right_wrist');
-        const leftAngle = angle(leftShoulder, leftElbow, leftWrist);
-        const rightAngle = angle(rightShoulder, rightElbow, rightWrist);
-        if (leftAngle && rightAngle) {
-          return leftAngle > 150 && rightAngle > 150;
-        }
-        break;
-      }
-      case 'side-lateral-raise': {
-        // Arms at shoulder height
-        const leftShoulder = get('left_shoulder');
-        const leftWrist = get('left_wrist');
-        const rightShoulder = get('right_shoulder');
-        const rightWrist = get('right_wrist');
-        if (leftShoulder && leftWrist && rightShoulder && rightWrist) {
-          const leftAtHeight = Math.abs(leftWrist.y - leftShoulder.y) < rel(40);
-          const rightAtHeight = Math.abs(rightWrist.y - rightShoulder.y) < rel(40);
-          return leftAtHeight && rightAtHeight;
-        }
-        break;
-      }
-      case 'front-raise': {
-        // Arms in front at shoulder height
-        const leftShoulder = get('left_shoulder');
-        const leftWrist = get('left_wrist');
-        const rightShoulder = get('right_shoulder');
-        const rightWrist = get('right_wrist');
-        if (leftShoulder && leftWrist && rightShoulder && rightWrist) {
-          const leftFront = Math.abs(leftWrist.y - leftShoulder.y) < rel(40) && leftWrist.x > leftShoulder.x;
-          const rightFront = Math.abs(rightWrist.y - rightShoulder.y) < rel(40) && rightWrist.x < rightShoulder.x;
-          return leftFront && rightFront;
-        }
-        break;
-      }
-      case 'reverse-fly': {
-        // Arms out to sides, torso bent (shoulders lower than hips)
-        const leftShoulder = get('left_shoulder');
-        const rightShoulder = get('right_shoulder');
-        const leftHip = get('left_hip');
-        const rightHip = get('right_hip');
-        const leftWrist = get('left_wrist');
-        const rightWrist = get('right_wrist');
-        if (leftShoulder && rightShoulder && leftHip && rightHip && leftWrist && rightWrist) {
-          const torsoBent = leftShoulder.y > leftHip.y && rightShoulder.y > rightHip.y;
-          const armsOut = Math.abs(leftWrist.y - leftShoulder.y) < rel(40) && Math.abs(rightWrist.y - rightShoulder.y) < rel(40);
-          return torsoBent && armsOut;
-        }
-        break;
-      }
-      // BICEPS
-      case 'bicep-curl': {
-        // Elbow angle should decrease as you curl
-        const leftShoulder = get('left_shoulder');
-        const leftElbow = get('left_elbow');
-        const leftWrist = get('left_wrist');
-        const rightShoulder = get('right_shoulder');
-        const rightElbow = get('right_elbow');
-        const rightWrist = get('right_wrist');
-        const leftAngle = angle(leftShoulder, leftElbow, leftWrist);
-        const rightAngle = angle(rightShoulder, rightElbow, rightWrist);
-        if (leftAngle && rightAngle) {
-          return leftAngle < 70 && rightAngle < 70;
-        }
-        break;
-      }
-      case 'hammer-curl': {
-        // Similar to bicep curl, but wrists neutral
-        const leftShoulder = get('left_shoulder');
-        const leftElbow = get('left_elbow');
-        const leftWrist = get('left_wrist');
-        const rightShoulder = get('right_shoulder');
-        const rightElbow = get('right_elbow');
-        const rightWrist = get('right_wrist');
-        const leftAngle = angle(leftShoulder, leftElbow, leftWrist);
-        const rightAngle = angle(rightShoulder, rightElbow, rightWrist);
-        if (leftAngle && rightAngle) {
-          return leftAngle < 70 && rightAngle < 70;
-        }
-        break;
-      }
-      // TRICEPS
-      case 'tricep-dip': {
-        // Elbow angle < 90 at bottom
-        const leftShoulder = get('left_shoulder');
-        const leftElbow = get('left_elbow');
-        const leftWrist = get('left_wrist');
-        const rightShoulder = get('right_shoulder');
-        const rightElbow = get('right_elbow');
-        const rightWrist = get('right_wrist');
-        const leftAngle = angle(leftShoulder, leftElbow, leftWrist);
-        const rightAngle = angle(rightShoulder, rightElbow, rightWrist);
-        if (leftAngle && rightAngle) {
-          return leftAngle < 100 && rightAngle < 100;
-        }
-        break;
-      }
-      case 'overhead-tricep-extension': {
-        // Elbow above shoulder, wrist behind head
-        const leftShoulder = get('left_shoulder');
-        const leftElbow = get('left_elbow');
-        const leftWrist = get('left_wrist');
-        const rightShoulder = get('right_shoulder');
-        const rightElbow = get('right_elbow');
-        const rightWrist = get('right_wrist');
-        if (leftShoulder && leftElbow && leftWrist && rightShoulder && rightElbow && rightWrist) {
-          const leftGood = leftElbow.y < leftShoulder.y && leftWrist.y < leftElbow.y;
-          const rightGood = rightElbow.y < rightShoulder.y && rightWrist.y < rightElbow.y;
-          return leftGood && rightGood;
-        }
-        break;
-      }
-      // LEGS
-      case 'squats': {
-        const leftHip = get('left_hip');
-        const leftKnee = get('left_knee');
-        const leftAnkle = get('left_ankle');
-        const rightHip = get('right_hip');
-        const rightKnee = get('right_knee');
-        const rightAnkle = get('right_ankle');
-        const leftAngle = angle(leftHip, leftKnee, leftAnkle);
-        const rightAngle = angle(rightHip, rightKnee, rightAnkle);
-        if (leftAngle && rightAngle) {
-          return leftAngle < 100 && rightAngle < 100;
-        }
-        break;
-      }
-      case 'lunges': {
-        const leftHip = get('left_hip');
-        const leftKnee = get('left_knee');
-        const leftAnkle = get('left_ankle');
-        const rightHip = get('right_hip');
-        const rightKnee = get('right_knee');
-        const rightAnkle = get('right_ankle');
-        const leftAngle = angle(leftHip, leftKnee, leftAnkle);
-        const rightAngle = angle(rightHip, rightKnee, rightAnkle);
-        if (leftAngle && rightAngle) {
-          return (leftAngle > 80 && leftAngle < 110) || (rightAngle > 80 && rightAngle < 110);
-        }
-        break;
-      }
-      case 'bulgarian-split-squat': {
-        // One knee bent, one leg extended back
-        const leftHip = get('left_hip');
-        const leftKnee = get('left_knee');
-        const leftAnkle = get('left_ankle');
-        const rightHip = get('right_hip');
-        const rightKnee = get('right_knee');
-        const rightAnkle = get('right_ankle');
-        if (leftHip && leftKnee && leftAnkle && rightHip && rightKnee && rightAnkle) {
-          const leftAngle = angle(leftHip, leftKnee, leftAnkle);
-          const rightAngle = angle(rightHip, rightKnee, rightAnkle);
-          return (leftAngle < 100 && rightAngle > 140) || (rightAngle < 100 && leftAngle > 140);
-        }
-        break;
-      }
-      case 'calf-raise': {
-        // Ankles above toes, hips and shoulders aligned
-        const leftAnkle = get('left_ankle');
-        const rightAnkle = get('right_ankle');
-        const leftHip = get('left_hip');
-        const rightHip = get('right_hip');
-        const leftShoulder = get('left_shoulder');
-        const rightShoulder = get('right_shoulder');
-        if (leftAnkle && rightAnkle && leftHip && rightHip && leftShoulder && rightShoulder) {
-          const hipsAligned = Math.abs(leftHip.y - rightHip.y) < rel(20);
-          const shouldersAligned = Math.abs(leftShoulder.y - rightShoulder.y) < rel(20);
-          const onToes = leftAnkle.y < leftHip.y && rightAnkle.y < rightHip.y;
-          return hipsAligned && shouldersAligned && onToes;
-        }
-        break;
-      }
-      // ABS
-      case 'plank': {
-        // Body should be in a straight line: shoulder-hip-ankle angle ~170-180
-        const leftShoulder = get('left_shoulder');
-        const leftHip = get('left_hip');
-        const leftAnkle = get('left_ankle');
-        const rightShoulder = get('right_shoulder');
-        const rightHip = get('right_hip');
-        const rightAnkle = get('right_ankle');
-        const leftAngle = angle(leftShoulder, leftHip, leftAnkle);
-        const rightAngle = angle(rightShoulder, rightHip, rightAnkle);
-        if (leftAngle && rightAngle) {
-          return leftAngle > 160 && rightAngle > 160;
-        }
-        break;
-      }
-      case 'crunches': {
-        // Shoulders above hips, vertical distance reduced
-        const leftShoulder = get('left_shoulder');
-        const rightShoulder = get('right_shoulder');
-        const leftHip = get('left_hip');
-        const rightHip = get('right_hip');
-        if (leftShoulder && rightShoulder && leftHip && rightHip) {
-          const avgShoulderY = (leftShoulder.y + rightShoulder.y) / 2;
-          const avgHipY = (leftHip.y + rightHip.y) / 2;
-          return avgShoulderY < avgHipY - rel(30);
-        }
-        break;
-      }
-      case 'bicycle-crunch': {
-        // Elbow and opposite knee close
-        const leftElbow = get('left_elbow');
-        const rightKnee = get('right_knee');
-        const rightElbow = get('right_elbow');
-        const leftKnee = get('left_knee');
-        if (leftElbow && rightKnee && rightElbow && leftKnee) {
-          const leftClose = Math.abs(leftElbow.x - rightKnee.x) < rel(40) && Math.abs(leftElbow.y - rightKnee.y) < rel(40);
-          const rightClose = Math.abs(rightElbow.x - leftKnee.x) < rel(40) && Math.abs(rightElbow.y - leftKnee.y) < rel(40);
-          return leftClose || rightClose;
-        }
-        break;
-      }
-      case 'mountain-climbers': {
-        // Knee close to chest
-        const leftHip = get('left_hip');
-        const leftKnee = get('left_knee');
-        const rightHip = get('right_hip');
-        const rightKnee = get('right_knee');
-        if (leftHip && leftKnee && rightHip && rightKnee) {
-          const leftClose = Math.abs(leftKnee.y - leftHip.y) < rel(60);
-          const rightClose = Math.abs(rightKnee.y - rightHip.y) < rel(60);
-          return leftClose || rightClose;
-        }
-        break;
-      }
-      // FULL BODY/CARDIO
-      case 'jumping-jacks': {
-        // Arms above head, legs apart
-        const leftWrist = get('left_wrist');
-        const rightWrist = get('right_wrist');
-        const leftAnkle = get('left_ankle');
-        const rightAnkle = get('right_ankle');
-        const leftShoulder = get('left_shoulder');
-        const rightShoulder = get('right_shoulder');
-        if (leftWrist && rightWrist && leftAnkle && rightAnkle && leftShoulder && rightShoulder) {
-          const armsUp = leftWrist.y < leftShoulder.y && rightWrist.y < rightShoulder.y;
-          const legsApart = Math.abs(leftAnkle.x - rightAnkle.x) > rel(150);
-          return armsUp && legsApart;
-        }
-        break;
-      }
-      default:
-        return null;
-    }
-    return null;
-  };
-
   // Main pose detection function
   const detectPose = async () => {
     // Read live values from refs — the loop runs from one captured closure, so
     // reading React state here would use stale, loop-start values.
     const detector = detectorRef.current;
-    if (!detector || !webcamRef.current || !webcamRef.current.video || !canvasRef.current || isPausedRef.current) {
+
+    // Paused: stop the loop entirely; togglePause reschedules it on resume.
+    if (isPausedRef.current) return;
+
+    // Refs can be momentarily null while the webcam element is (re)mounting.
+    // Retry next frame instead of returning without rescheduling — the latter
+    // would silently kill the detection loop and freeze the tracker.
+    if (!detector || !webcamRef.current?.video || !canvasRef.current) {
+      requestAnimationRef.current = requestAnimationFrame(detectPose);
       return;
     }
 
@@ -1168,9 +803,18 @@ const LiveWorkoutTracker = () => {
         // Draw the skeleton if we have poses
         if (poses && poses.length > 0) {
           const pose = poses[0]; // We only care about the first detected person
+          // Smooth the raw keypoints once, then feed the smoothed set to the
+          // overlay AND the geometry — the skeleton stops shimmering and the form
+          // arrows/verdict get steadier too.
+          const keypoints = smootherRef.current.smooth(pose.keypoints as Keypoints, performance.now());
 
-          // Raw per-frame form verdict (may be null when uncertain).
-          const rawForm = analyzePose(pose);
+          // Form + corrections share ONE source of truth: the live fault
+          // detector. The badge/skeleton verdict is derived from actual,
+          // position-independent faults (hip sag, elbow flare, knee cave…), not
+          // from whether the body is at peak contraction — so it no longer flips
+          // red at the top/bottom of an otherwise-correct rep.
+          const corrections = getCorrections(selectedWorkoutRef.current.id, keypoints);
+          const rawForm = assessForm(selectedWorkoutRef.current.id, keypoints, corrections);
 
           if (rawForm !== null) {
             // Track form quality for the session's good-form percentage.
@@ -1201,9 +845,8 @@ const LiveWorkoutTracker = () => {
           // Rep counting is a state machine fed by the exercise signal,
           // independent of the form flag. A rep is a full movement cycle.
           const counter = repCounterRef.current;
-          const corrections = getCorrections(selectedWorkoutRef.current.id, pose.keypoints as Keypoints);
           if (counter) {
-            const value = counter.spec.signal(pose.keypoints as Keypoints);
+            const value = counter.spec.signal(keypoints);
             const repped = counter.counter.update(value, performance.now(), {
               formOk: displayForm,
               requireGoodForm: strictFormRef.current,
@@ -1231,8 +874,8 @@ const LiveWorkoutTracker = () => {
             }
           }
 
-          // Draw skeleton
-          drawSkeleton(ctx, pose, videoWidth, videoHeight, displayForm);
+          // Draw skeleton from the smoothed keypoints so the overlay is steady.
+          drawSkeleton(ctx, keypoints, displayForm);
 
           // Show where the user is wrong and where to move — a ghost of the
           // correct limb + an arrow, derived from their own keypoints.
@@ -1253,12 +896,10 @@ const LiveWorkoutTracker = () => {
   // which body part to correct. Focus joints pulse to draw the eye.
   const drawSkeleton = (
     ctx: CanvasRenderingContext2D,
-    pose: poseDetection.Pose,
-    _videoWidth: number,
-    _videoHeight: number,
+    keypoints: Keypoints,
     formStatus: boolean | null
   ) => {
-    if (!pose || !pose.keypoints) return;
+    if (!keypoints || keypoints.length === 0) return;
 
     const focusColor =
       formStatus === true ? '#1FDD80' : formStatus === false ? '#F0616D' : '#EAEAEA';
@@ -1279,7 +920,7 @@ const LiveWorkoutTracker = () => {
     ];
 
     const keypointMap = new Map<string, { x: number; y: number }>();
-    pose.keypoints.forEach((k) => {
+    keypoints.forEach((k) => {
       if (k.name && k.score && k.score > 0.4) keypointMap.set(k.name, k);
     });
 
@@ -1320,7 +961,7 @@ const LiveWorkoutTracker = () => {
 
     // Dim dots for every visible joint.
     ctx.fillStyle = dim;
-    pose.keypoints.forEach((k) => {
+    keypoints.forEach((k) => {
       if (k.name && k.score && k.score > 0.4 && !focus.has(k.name)) {
         ctx.beginPath();
         ctx.arc(k.x, k.y, 4, 0, 2 * Math.PI);
@@ -1441,7 +1082,7 @@ const LiveWorkoutTracker = () => {
               AI-powered form detection and rep counting
             </p>
           </div>
-          <div className="mt-4 md:mt-0 space-x-2">
+          <div className="mt-4 flex flex-wrap gap-2 md:mt-0">
             <AlertDialog>
               <AlertDialogTrigger asChild>
                 <Button variant="outline" className="border-fitness-green text-fitness-green">
@@ -1508,48 +1149,46 @@ const LiveWorkoutTracker = () => {
           {/* Main webcam and controls */}
           <div className="lg:col-span-2 space-y-4">
             <div className="bg-fitness-card-bg p-4 rounded-xl">
-              <div className="relative aspect-video bg-black rounded-lg overflow-hidden">
+              <div className="relative aspect-[3/4] bg-black rounded-lg overflow-hidden sm:aspect-video">
                 {isWebcamActive ? (
                   <>
                     <Webcam
                       ref={webcamRef}
                       audio={false}
                       mirrored={true}
-                      videoConstraints={{
-                        width: { ideal: 1280 },
-                        height: { ideal: 720 },
-                        aspectRatio: 16 / 9,
-                        facingMode: "user",
-                      }}
+                      videoConstraints={videoConstraints}
                       className="absolute top-0 left-0 w-full h-full object-cover"
                     />
                     {/* Mirror the overlay to match the mirrored feed so the
-                        skeleton tracks the body instead of its reflection. */}
+                        skeleton tracks the body instead of its reflection.
+                        object-cover crops the canvas bitmap exactly like the
+                        video, so the skeleton stays aligned at any container
+                        aspect ratio (portrait on phones, 16:9 on desktop). */}
                     <canvas
                       ref={canvasRef}
-                      className="absolute top-0 left-0 w-full h-full -scale-x-100"
+                      className="absolute top-0 left-0 w-full h-full object-cover -scale-x-100"
                     />
 
                     {/* HUD corner frame (decorative) */}
-                    <div className="pointer-events-none absolute inset-3">
-                      <span className="absolute left-0 top-0 h-6 w-6 rounded-tl-lg border-l-2 border-t-2 border-fitness-green/60" />
-                      <span className="absolute right-0 top-0 h-6 w-6 rounded-tr-lg border-r-2 border-t-2 border-fitness-green/60" />
-                      <span className="absolute bottom-0 left-0 h-6 w-6 rounded-bl-lg border-b-2 border-l-2 border-fitness-green/60" />
-                      <span className="absolute bottom-0 right-0 h-6 w-6 rounded-br-lg border-b-2 border-r-2 border-fitness-green/60" />
+                    <div className="pointer-events-none absolute inset-2 sm:inset-3">
+                      <span className="absolute left-0 top-0 h-4 w-4 rounded-tl-lg border-l-2 border-t-2 border-fitness-green/60 sm:h-6 sm:w-6" />
+                      <span className="absolute right-0 top-0 h-4 w-4 rounded-tr-lg border-r-2 border-t-2 border-fitness-green/60 sm:h-6 sm:w-6" />
+                      <span className="absolute bottom-0 left-0 h-4 w-4 rounded-bl-lg border-b-2 border-l-2 border-fitness-green/60 sm:h-6 sm:w-6" />
+                      <span className="absolute bottom-0 right-0 h-4 w-4 rounded-br-lg border-b-2 border-r-2 border-fitness-green/60 sm:h-6 sm:w-6" />
                     </div>
 
                     {/* LIVE indicator */}
-                    <div className="absolute left-4 top-4 flex items-center gap-2 rounded-lg border border-white/10 bg-fitness-black/70 px-2.5 py-1 text-xs font-semibold uppercase tracking-wider text-white backdrop-blur">
-                      <span className="relative flex h-2 w-2">
+                    <div className="absolute left-2 top-2 flex items-center gap-1.5 rounded-md border border-white/10 bg-fitness-black/70 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-white backdrop-blur sm:left-4 sm:top-4 sm:gap-2 sm:rounded-lg sm:px-2.5 sm:py-1 sm:text-xs">
+                      <span className="relative flex h-1.5 w-1.5 sm:h-2 sm:w-2">
                         <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-fitness-error opacity-75" />
-                        <span className="relative inline-flex h-2 w-2 rounded-full bg-fitness-error" />
+                        <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-fitness-error sm:h-2 sm:w-2" />
                       </span>
                       Live
                     </div>
 
                     {/* Form feedback */}
                     {isGoodForm !== null && (
-                      <div className={`absolute right-4 top-4 flex items-center gap-2 rounded-lg border px-3 py-1.5 text-sm font-semibold backdrop-blur ${
+                      <div className={`absolute right-2 top-2 flex items-center gap-1 rounded-md border px-2 py-0.5 text-[10px] font-semibold backdrop-blur sm:right-4 sm:top-4 sm:gap-2 sm:rounded-lg sm:px-3 sm:py-1.5 sm:text-sm ${
                           isGoodForm
                             ? 'border-fitness-success/40 bg-fitness-success/15 text-fitness-success'
                             : 'border-fitness-error/40 bg-fitness-error/15 text-fitness-error'
@@ -1557,12 +1196,12 @@ const LiveWorkoutTracker = () => {
                       >
                         {isGoodForm ? (
                           <>
-                            <CheckCircle2 className="h-4 w-4" />
+                            <CheckCircle2 className="h-3 w-3 sm:h-4 sm:w-4" />
                             Good Form
                           </>
                         ) : (
                           <>
-                            <XCircle className="h-4 w-4" />
+                            <XCircle className="h-3 w-3 sm:h-4 sm:w-4" />
                             Adjust Form
                           </>
                         )}
@@ -1570,59 +1209,40 @@ const LiveWorkoutTracker = () => {
                     )}
 
                     {/* Rep counter HUD */}
-                    <div className="absolute bottom-4 left-4 rounded-xl border border-white/10 bg-fitness-black/80 px-4 py-2.5 backdrop-blur">
-                      <div className="text-4xl font-extrabold leading-none text-fitness-green tabular-nums">
+                    <div className="absolute bottom-2 left-2 rounded-lg border border-white/10 bg-fitness-black/80 px-2.5 py-1.5 backdrop-blur sm:bottom-4 sm:left-4 sm:rounded-xl sm:px-4 sm:py-2.5">
+                      <div className="text-2xl font-extrabold leading-none text-fitness-green tabular-nums sm:text-4xl">
                         {repCount}
                       </div>
-                      <div className="mt-1 text-[10px] font-semibold uppercase tracking-widest text-fitness-gray">
+                      <div className="mt-0.5 text-[9px] font-semibold uppercase tracking-widest text-fitness-gray sm:mt-1 sm:text-[10px]">
                         Reps · {selectedWorkout.name}
                       </div>
                     </div>
-
-                    {/* Always-on coaching banner — reacts to your movement live */}
-                    {!showInstructions && (
-                      <div className="absolute inset-x-4 bottom-4 flex justify-center sm:left-40">
-                        <div
-                          className={`flex items-center gap-2 rounded-xl border bg-fitness-black/85 px-4 py-2.5 text-sm backdrop-blur ${
-                            coach.tone === 'good'
-                              ? 'border-fitness-success/40 text-fitness-success'
-                              : coach.tone === 'warn'
-                              ? 'border-fitness-error/40 text-white'
-                              : 'border-white/10 text-fitness-gray'
-                          }`}
-                        >
-                          {coach.tone === 'good' ? (
-                            <CheckCircle2 className="h-4 w-4 shrink-0" />
-                          ) : coach.tone === 'warn' ? (
-                            <AlertTriangle className="h-4 w-4 shrink-0 text-fitness-error" />
-                          ) : (
-                            <Info className="h-4 w-4 shrink-0" />
-                          )}
-                          <span>{coach.text}</span>
-                        </div>
-                      </div>
-                    )}
                     
                     {/* Instructions overlay */}
                     {showInstructions && (
-                      <div className="absolute inset-0 bg-black/70 flex items-center justify-center flex-col p-8">
-                        <h3 className="text-xl font-bold mb-4">{selectedWorkout.name}</h3>
-                        <ul className="space-y-2 text-sm mb-6">
-                          {selectedWorkout.instructions.map((instruction, i) => (
-                            <li key={i} className="flex items-start">
-                              <div className="h-5 w-5 rounded-full bg-fitness-green text-black flex items-center justify-center text-xs mr-2 mt-0.5">
-                                {i+1}
-                              </div>
-                              {instruction}
-                            </li>
-                          ))}
-                        </ul>
-                        <Button 
-                          className="bg-fitness-green text-black hover:bg-fitness-green/80"
-                          onClick={() => setShowInstructions(false)}
-                        >
-                          Start Exercise
-                        </Button>
+                      <div className="absolute inset-0 flex flex-col items-center justify-center overflow-y-auto bg-black/75 p-3 text-center sm:p-6">
+                        <div className="w-full max-w-md py-2">
+                          <h3 className="mb-2 text-base font-bold sm:mb-4 sm:text-xl">
+                            {selectedWorkout.name}
+                          </h3>
+                          <ul className="mx-auto mb-4 space-y-1.5 text-left text-xs sm:mb-6 sm:space-y-2 sm:text-sm">
+                            {selectedWorkout.instructions.map((instruction, i) => (
+                              <li key={i} className="flex items-start">
+                                <div className="mr-2 mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-fitness-green text-[10px] text-black sm:h-5 sm:w-5 sm:text-xs">
+                                  {i + 1}
+                                </div>
+                                <span>{instruction}</span>
+                              </li>
+                            ))}
+                          </ul>
+                          <Button
+                            size="sm"
+                            className="bg-fitness-green text-black hover:bg-fitness-green/80 sm:h-10 sm:px-4"
+                            onClick={() => setShowInstructions(false)}
+                          >
+                            Start Exercise
+                          </Button>
+                        </div>
                       </div>
                     )}
                   </>
@@ -1650,10 +1270,32 @@ const LiveWorkoutTracker = () => {
                   </div>
                 )}
               </div>
-              
+
+              {/* Coaching bar — below the video on phones (overlay is hidden there) */}
+              {isWebcamActive && !showInstructions && (
+                <div
+                  className={`mt-3 flex items-center gap-2 rounded-lg border px-3 py-2 text-sm sm:hidden ${
+                    coach.tone === 'good'
+                      ? 'border-fitness-success/40 bg-fitness-success/10 text-fitness-success'
+                      : coach.tone === 'warn'
+                      ? 'border-fitness-error/40 bg-fitness-error/10 text-white'
+                      : 'border-white/10 bg-white/[0.03] text-fitness-gray'
+                  }`}
+                >
+                  {coach.tone === 'good' ? (
+                    <CheckCircle2 className="h-4 w-4 shrink-0" />
+                  ) : coach.tone === 'warn' ? (
+                    <AlertTriangle className="h-4 w-4 shrink-0 text-fitness-error" />
+                  ) : (
+                    <Info className="h-4 w-4 shrink-0" />
+                  )}
+                  <span>{coach.text}</span>
+                </div>
+              )}
+
               {/* Controls */}
-              <div className="mt-4 flex items-center justify-between">
-                <div className="flex items-center space-x-2">
+              <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex flex-wrap items-center gap-2">
                   {isWebcamActive ? (
                     <>
                       <Button 
@@ -1707,7 +1349,7 @@ const LiveWorkoutTracker = () => {
                     }
                   }}
                 >
-                  <SelectTrigger className="w-[180px] bg-fitness-dark-gray border-fitness-dark-gray">
+                  <SelectTrigger className="w-full bg-fitness-dark-gray border-fitness-dark-gray sm:w-[180px]">
                     <SelectValue placeholder="Select exercise" />
                   </SelectTrigger>
                   <SelectContent className="bg-fitness-card-bg border-fitness-dark-gray">
@@ -1854,19 +1496,19 @@ const LiveWorkoutTracker = () => {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           <div className="bg-fitness-card-bg rounded-xl p-6">
             <h2 className="text-lg font-semibold mb-4">Workout Navigation</h2>
-            <div className="flex justify-between items-center">
-              <Button variant="outline" className="border-fitness-dark-gray">
-                <ChevronLeft className="h-4 w-4 mr-2" />
-                Previous
+            <div className="flex items-center justify-between gap-2">
+              <Button variant="outline" className="border-fitness-dark-gray px-3">
+                <ChevronLeft className="h-4 w-4 sm:mr-2" />
+                <span className="hidden sm:inline">Previous</span>
               </Button>
-              
-              <span className="text-fitness-gray">
+
+              <span className="text-center text-xs text-fitness-gray sm:text-sm">
                 Exercise {WORKOUTS.findIndex(w => w.id === selectedWorkout.id) + 1} of {WORKOUTS.length}
               </span>
-              
-              <Button 
-                variant="outline" 
-                className="border-fitness-dark-gray"
+
+              <Button
+                variant="outline"
+                className="border-fitness-dark-gray px-3"
                 onClick={() => {
                   const currentIndex = WORKOUTS.findIndex(w => w.id === selectedWorkout.id);
                   const nextIndex = (currentIndex + 1) % WORKOUTS.length;
@@ -1875,8 +1517,8 @@ const LiveWorkoutTracker = () => {
                   setShowInstructions(true);
                 }}
               >
-                Next
-                <ChevronRight className="h-4 w-4 ml-2" />
+                <span className="hidden sm:inline">Next</span>
+                <ChevronRight className="h-4 w-4 sm:ml-2" />
               </Button>
             </div>
           </div>

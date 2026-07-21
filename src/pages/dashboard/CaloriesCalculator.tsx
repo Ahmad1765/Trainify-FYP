@@ -145,7 +145,7 @@ const CaloriesCalculator = () => {
         </div>
 
         <Tabs value={activeTab} onValueChange={setActiveTab} defaultValue="calculator" className="space-y-6">
-          <TabsList className="bg-fitness-card-bg">
+          <TabsList className="h-auto max-w-full flex-wrap bg-fitness-card-bg">
             <TabsTrigger value="calculator">Calculator</TabsTrigger>
             <TabsTrigger value="saved">Saved Calculations</TabsTrigger>
             <TabsTrigger value="history">History</TabsTrigger>
@@ -520,8 +520,8 @@ const CaloriesCalculator = () => {
       </div>
 
       {nutritionModal && calculationResult && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80">
-          <div className="bg-fitness-card-bg rounded-xl shadow-lg p-6 max-w-md w-full relative">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4">
+          <div className="bg-fitness-card-bg rounded-xl shadow-lg p-5 sm:p-6 max-w-md w-full relative max-h-[90vh] overflow-y-auto">
             <button className="absolute top-2 right-2 text-fitness-gray hover:text-fitness-green text-2xl" onClick={() => setNutritionModal(false)} aria-label="Close">&times;</button>
             <h3 className="text-lg font-bold mb-4">Your Nutrition Plan</h3>
             <div className="space-y-4">

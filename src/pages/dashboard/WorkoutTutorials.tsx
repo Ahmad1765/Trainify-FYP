@@ -405,8 +405,8 @@ const WorkoutTutorials = () => {
       </div>
 
       {videoModal.open && videoModal.videoUrl && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80">
-          <div className="bg-fitness-card-bg rounded-xl shadow-lg p-4 max-w-2xl w-full relative">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4">
+          <div className="bg-fitness-card-bg rounded-xl shadow-lg p-4 max-w-2xl w-full relative max-h-[90vh] overflow-y-auto">
             <button
               className="absolute top-2 right-2 text-fitness-gray hover:text-fitness-green text-2xl"
               onClick={() => setVideoModal({ open: false, videoUrl: null })}

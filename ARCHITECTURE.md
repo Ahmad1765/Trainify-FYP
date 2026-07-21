@@ -223,50 +223,56 @@ A `requestAnimationFrame` loop that runs while the webcam is on and not paused:
 
 ```
 detectPose()
-  ├─ bail if detector/webcam/canvas missing, or paused
-  ├─ bail-and-retry if video.readyState !== 4
+  ├─ stop if paused (togglePause reschedules on resume)
+  ├─ retry-next-frame if detector/webcam/canvas missing, or video.readyState !== 4
   ├─ size canvas to the video
   ├─ detector.estimatePoses(video)   →  17 keypoints w/ x, y, score
-  ├─ analyzePose(pose)               →  true | false | null
+  ├─ getCorrections(id, kp)          →  Correction[] (the fault detector)
+  ├─ assessForm(id, kp, corrections) →  true | false | null (the form verdict)
   ├─ on state change: play a tone, maybe increment reps
-  ├─ drawSkeleton(...)
+  ├─ drawSkeleton(...) + drawCorrections(...)
   └─ requestAnimationFrame(detectPose)   ← loop
 ```
 
-### `analyzePose` — the form logic (`:549-935`)
+### The form verdict — `assessForm` (`src/lib/formCorrection.ts`)
 
-Returns `true` (good form), `false` (bad form), or `null` (can't tell).
+Returns `true` (good form), `false` (a real fault), or `null` (can't tell / not assessed).
 
-1. **Confidence gate** (`:559`): averages the score of all keypoints; if `< 0.5`, returns
-   `null` — the user isn't clearly visible.
-2. Defines helpers: `get(name)` finds a keypoint, `angle(a,b,c)` computes the angle at `b`
-   via the dot product, in degrees.
-3. A **`switch` on `selectedWorkout.id`** with a hand-written rule per exercise.
+The verdict is derived from **`getCorrections`**, the same fault detector that draws the
+on-camera arrows — so the badge, the skeleton colour, the coaching text, and the arrows all
+share one source of truth. It flags **position-independent faults** (hip sag, elbow flare,
+knee cave, over-raising…), NOT whether the body is at peak contraction.
 
-Examples of the rules:
+> Historical note: this replaced `analyzePose`, a per-exercise `switch` that returned "good
+> form" only while the body was at the bottom/peak of a rep. Because that answer was tied to
+> rep position, the badge flipped red during the top half of every otherwise-correct rep —
+> the "red even with correct form" bug. `assessForm` fixes it at the root.
 
-```ts
-case 'push-ups':    elbow angle between 60° and 100°, both arms
-case 'squats':      hip-knee-ankle angle < 100°, both legs
-case 'plank':       shoulder-hip-ankle angle > 160°, both sides
-case 'bicep-curl':  elbow angle < 70°, both arms
-case 'jumping-jacks': wrists above shoulders AND ankles > 150px apart
-```
+1. **Assessability gate**: if the exercise has no form rules (`ASSESSABLE` = the union of the
+   `PRONE`/`ARM_TUCK`/`SQUAT`/`PRESS`/`RAISE` sets), return `null` so the badge hides rather
+   than showing a hollow "good form".
+2. **Visibility gate**: require at least `MIN_VISIBLE_JOINTS` confident keypoints, else `null`.
+3. Otherwise, good form ⇔ `getCorrections(...)` returns no faults.
 
-**This is where you add or tune an exercise.** Two edits: add an entry to `WORKOUTS`, add a
-`case` for its `id` in this switch. Miss the second and the exercise appears in the dropdown
-but form detection silently returns `null` (white skeleton, no feedback) via the `default`
-branch.
+**Adding or tuning an exercise's form check** now means editing `getCorrections` in
+`src/lib/formCorrection.ts` (and its calibrated thresholds), not a `switch` in the component.
+Its checks are **view-aware** and scaled to shoulder-width / torso length, so they don't
+depend on video resolution or how far the user stands from the camera.
 
-Note the thresholds are in **raw pixels** for distance checks (`< 40`, `> 150`) — these
-don't scale with video resolution or how far the user stands from the camera. Angle-based
-rules don't have this problem. Prefer angles when adding exercises.
-
-### Rendering (`:1003-1068`)
+### Rendering
 
 `drawSkeleton` clears the canvas and draws 16 bone connections plus keypoint dots, filtering
-to keypoints with `score > 0.4`. Colors: green `#00FF7F` good, red `#F44336` bad, white
+to keypoints with `score > 0.4`. Colors: green `#1FDD80` good, red `#F0616D` bad, white
 undetermined. The canvas is overlaid on the `<Webcam>` element.
+
+**Keypoint smoothing (`src/lib/poseSmoothing.ts`).** MoveNet's raw keypoints jitter a few
+pixels per frame even when the subject is still, which makes the overlay shimmer. Each frame's
+keypoints are passed through a `KeypointSmoother` (a speed-adaptive **One-Euro** filter, one
+per joint per axis) before they drive both the drawing and the geometry. It filters hard when
+a joint is still (jitter gone) and opens up when it moves fast (no lag behind a rep); at a
+steady position it converges to the true value, so calibrated form/rep thresholds are
+unaffected. The smoother is reset on start / reset / exercise switch so it never lerps from a
+stale position. Low-confidence keypoints reset their filter and pass through untouched.
 
 ### Audio (`:458-487`)
 

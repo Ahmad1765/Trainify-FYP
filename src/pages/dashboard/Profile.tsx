@@ -152,7 +152,7 @@ const Profile = () => {
         </div>
 
         <Tabs defaultValue="profile" className="space-y-6">
-          <TabsList className="bg-fitness-card-bg">
+          <TabsList className="h-auto max-w-full flex-wrap bg-fitness-card-bg">
             <TabsTrigger value="profile">Profile</TabsTrigger>
             <TabsTrigger value="stats">Statistics</TabsTrigger>
             <TabsTrigger value="history">Workout History</TabsTrigger>

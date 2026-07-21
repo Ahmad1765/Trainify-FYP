@@ -30,11 +30,13 @@ export default {
 			},
 			fontSize: {
 				// Display scale — page titles feel distinct from card headers.
-				'display-2xl': ['4.5rem', { lineHeight: '1.02', letterSpacing: '-0.035em', fontWeight: '800' }],
-				'display-xl': ['3.5rem', { lineHeight: '1.04', letterSpacing: '-0.03em', fontWeight: '800' }],
-				'display-lg': ['2.75rem', { lineHeight: '1.08', letterSpacing: '-0.025em', fontWeight: '700' }],
-				'display-md': ['2rem', { lineHeight: '1.12', letterSpacing: '-0.02em', fontWeight: '700' }],
-				'display-sm': ['1.5rem', { lineHeight: '1.2', letterSpacing: '-0.015em', fontWeight: '700' }],
+				// Fluid: shrinks on narrow phones, then locks to the original size
+				// at desktop widths so a 72px hero can't overflow a 360px screen.
+				'display-2xl': ['clamp(2.75rem, 2rem + 3.75vw, 4.5rem)', { lineHeight: '1.02', letterSpacing: '-0.035em', fontWeight: '800' }],
+				'display-xl': ['clamp(2.125rem, 1.55rem + 2.9vw, 3.5rem)', { lineHeight: '1.04', letterSpacing: '-0.03em', fontWeight: '800' }],
+				'display-lg': ['clamp(1.75rem, 1.35rem + 2vw, 2.75rem)', { lineHeight: '1.08', letterSpacing: '-0.025em', fontWeight: '700' }],
+				'display-md': ['clamp(1.5rem, 1.3rem + 1vw, 2rem)', { lineHeight: '1.12', letterSpacing: '-0.02em', fontWeight: '700' }],
+				'display-sm': ['clamp(1.25rem, 1.15rem + 0.5vw, 1.5rem)', { lineHeight: '1.2', letterSpacing: '-0.015em', fontWeight: '700' }],
 			},
 			colors: {
 				border: 'hsl(var(--border))',

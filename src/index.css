@@ -134,6 +134,22 @@
 }
 
 @layer utilities {
+  /* Safe-area insets (notch / status bar / home indicator). Active once the
+     viewport meta opts in with viewport-fit=cover; the max() keeps a sensible
+     fallback on devices/browsers that report 0. */
+  .pt-safe {
+    padding-top: max(var(--safe-pt, 0px), env(safe-area-inset-top));
+  }
+  .pb-safe {
+    padding-bottom: max(var(--safe-pb, 0px), env(safe-area-inset-bottom));
+  }
+  .pl-safe {
+    padding-left: max(var(--safe-pl, 0px), env(safe-area-inset-left));
+  }
+  .pr-safe {
+    padding-right: max(var(--safe-pr, 0px), env(safe-area-inset-right));
+  }
+
   .text-balance {
     text-wrap: balance;
   }
