@@ -1518,7 +1518,17 @@ const LiveWorkoutTracker = () => {
           <div className="bg-fitness-card-bg rounded-xl p-6">
             <h2 className="text-lg font-semibold mb-4">Workout Navigation</h2>
             <div className="flex items-center justify-between gap-2">
-              <Button variant="outline" className="border-fitness-dark-gray px-3">
+              <Button
+                variant="outline"
+                className="border-fitness-dark-gray px-3"
+                onClick={() => {
+                  const currentIndex = WORKOUTS.findIndex(w => w.id === selectedWorkout.id);
+                  const prevIndex = (currentIndex - 1 + WORKOUTS.length) % WORKOUTS.length;
+                  setSelectedWorkout(WORKOUTS[prevIndex]);
+                  resetWorkout();
+                  setShowInstructions(true);
+                }}
+              >
                 <ChevronLeft className="h-4 w-4 sm:mr-2" />
                 <span className="hidden sm:inline">Previous</span>
               </Button>
