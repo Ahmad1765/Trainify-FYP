@@ -5,30 +5,11 @@ import Webcam from "react-webcam";
 import * as poseDetection from "@tensorflow-models/pose-detection";
 import * as tf from "@tensorflow/tfjs";
 import { Button } from "@/components/ui/button";
-import { Separator } from "@/components/ui/separator";
-import { 
-  Camera, 
-  Play, 
-  Pause, 
-  RefreshCw, 
-  ChevronRight, 
-  ChevronLeft, 
-  Info, 
-  AlertTriangle,
+import {
   CheckCircle2,
-  XCircle,
-  Video,
   Volume2,
   VolumeX,
-  Aperture
 } from "lucide-react";
-import { 
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -38,7 +19,6 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
-  AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { toast } from "@/components/ui/use-toast";
 import { RepCounter, getRepSpec, type RepSpec } from "@/lib/repCounter";
@@ -48,6 +28,10 @@ import { getCoaching, getFocusJoints } from "@/lib/formFeedback";
 import { getCorrections, assessForm, type Correction } from "@/lib/formCorrection";
 import { useCreateWorkoutSession } from "@/hooks/useWorkoutSessions";
 import { WORKOUTS, type Workout } from "@/lib/workouts";
+import SetupScreen from "@/components/live-tracker/SetupScreen";
+import ImmersiveStage from "@/components/live-tracker/ImmersiveStage";
+import SessionSummaryDialog from "@/components/live-tracker/SessionSummaryDialog";
+import { romProgress } from "@/lib/rangeOfMotion";
 
 const LiveWorkoutTracker = () => {
   const webcamRef = useRef<Webcam>(null);
@@ -147,6 +131,25 @@ const LiveWorkoutTracker = () => {
       setCoach({ text, tone });
     }
   };
+
+  // Range-of-motion progress (0–1) for the coaching meter — a read-only view of
+  // the same rep signal the counter consumes. Throttled like the coach line.
+  const [rom, setRom] = useState<number | null>(null);
+  const romRef = useRef<number | null>(null);
+  const setRomThrottled = (v: number | null) => {
+    // Only re-render on a visible change to avoid churn every frame.
+    const prev = romRef.current;
+    if (prev === null || v === null ? prev !== v : Math.abs(prev - v) > 0.02) {
+      romRef.current = v;
+      setRom(v);
+    }
+  };
+
+  // Details slide-in panel (Train stage) + end-of-session summary dialog.
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const [summary, setSummary] = useState<
+    { open: boolean; reps: number; durationLabel: string; goodFormPct: number | null; exerciseName: string }
+  >({ open: false, reps: 0, durationLabel: "0:00", goodFormPct: null, exerciseName: "" });
 
   // Load TensorFlow.js and pose detector
   useEffect(() => {
@@ -251,6 +254,7 @@ const LiveWorkoutTracker = () => {
       sessionStartRef.current = Date.now();
       formFramesRef.current = { good: 0, total: 0 };
       resetFormSmoothing();
+      setRomThrottled(null);
       smootherRef.current.reset();
       setIsGoodForm(null);
       setRepCount(0);
@@ -319,8 +323,19 @@ const LiveWorkoutTracker = () => {
 
   // Stop webcam and pose detection
   const stopWebcam = () => {
-    // Record the session before tearing everything down.
+    // Snapshot recap values before state resets, then persist.
+    const durationSec = Math.round((Date.now() - sessionStartRef.current) / 1000);
+    const reps = repCounterRef.current?.counter.reps ?? 0;
+    const { good, total } = formFramesRef.current;
     saveSession();
+    setSummary({
+      open: true,
+      reps,
+      durationLabel: formatElapsed(durationSec),
+      goodFormPct: total > 0 ? Math.round((good / total) * 100) : null,
+      exerciseName: selectedWorkout.name,
+    });
+    setDetailsOpen(false);
 
     setIsWebcamActive(false);
     if (requestAnimationRef.current) {
@@ -414,6 +429,7 @@ const LiveWorkoutTracker = () => {
     sessionStartRef.current = Date.now();
     formFramesRef.current = { good: 0, total: 0 };
     resetFormSmoothing();
+    setRomThrottled(null);
     smootherRef.current.reset();
     if (!isPausedRef.current && isWebcamActive) {
       if (requestAnimationRef.current) {
@@ -511,6 +527,7 @@ const LiveWorkoutTracker = () => {
           const counter = repCounterRef.current;
           if (counter) {
             const value = counter.spec.signal(keypoints);
+            setRomThrottled(romProgress(value, counter.spec));
             const repped = counter.counter.update(value, performance.now(), {
               formOk: displayForm,
               requireGoodForm: strictFormRef.current,
@@ -739,487 +756,73 @@ const LiveWorkoutTracker = () => {
   return (
     <DashboardLayout>
       <div className="space-y-6">
-        <div className="flex flex-col md:flex-row justify-between items-start md:items-center">
+        <div className="flex flex-col justify-between gap-3 md:flex-row md:items-center">
           <div>
             <h1 className="text-display-md">Live Workout Tracker</h1>
-            <p className="text-fitness-gray mt-1">
-              AI-powered form detection and rep counting
-            </p>
+            <p className="mt-1 text-fitness-gray">AI-powered form detection and rep counting</p>
           </div>
-          <div className="mt-4 flex flex-wrap gap-2 md:mt-0">
-            <AlertDialog>
-              <AlertDialogTrigger asChild>
-                <Button variant="outline" className="border-fitness-green text-fitness-green">
-                  <Info className="h-4 w-4 mr-2" />
-                  How it Works
-                </Button>
-              </AlertDialogTrigger>
-              <AlertDialogContent className="bg-fitness-card-bg border-fitness-dark-gray">
-                <AlertDialogHeader>
-                  <AlertDialogTitle>How the Live Tracker Works</AlertDialogTitle>
-                  <AlertDialogDescription className="text-fitness-gray">
-                    <ul className="list-disc list-inside space-y-2 mt-2">
-                      <li>
-                        The tracker uses AI to analyze your movements through your webcam
-                      </li>
-                      <li>
-                        It will highlight your body with a skeleton overlay
-                      </li>
-                      <li>
-                        Green indicates proper form, red indicates incorrect form
-                      </li>
-                      <li>
-                        Reps are counted automatically when performed correctly
-                      </li>
-                      <li>
-                        All processing happens directly in your browser - your video is not stored or sent to any server
-                      </li>
-                    </ul>
-                  </AlertDialogDescription>
-                </AlertDialogHeader>
-                <AlertDialogFooter>
-                  <AlertDialogAction className="bg-fitness-green text-black hover:bg-fitness-green/80">
-                    Got it
-                  </AlertDialogAction>
-                </AlertDialogFooter>
-              </AlertDialogContent>
-            </AlertDialog>
-            
-            <Button
-              variant="outline"
-              className={strictForm ? "border-fitness-green/50 text-fitness-green" : "border-fitness-dark-gray"}
-              onClick={() => setStrictForm((v) => !v)}
-              title="Strict form: only count reps performed with good form"
-            >
-              <CheckCircle2 className="h-4 w-4 mr-2" />
-              Strict form: {strictForm ? "On" : "Off"}
-            </Button>
-
-            <Button
-              variant="outline"
-              className="border-fitness-dark-gray"
-              onClick={() => setIsSoundEnabled(!isSoundEnabled)}
-            >
-              {isSoundEnabled ? (
-                <Volume2 className="h-4 w-4" />
-              ) : (
-                <VolumeX className="h-4 w-4" />
-              )}
-            </Button>
-          </div>
-        </div>
-
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Main webcam and controls */}
-          <div className="lg:col-span-2 space-y-4">
-            <div className="bg-fitness-card-bg p-4 rounded-xl">
-              <div className="relative aspect-[3/4] bg-black rounded-lg overflow-hidden sm:aspect-video">
-                {isWebcamActive ? (
-                  <>
-                    <Webcam
-                      ref={webcamRef}
-                      audio={false}
-                      mirrored={true}
-                      videoConstraints={videoConstraints}
-                      className="absolute top-0 left-0 w-full h-full object-cover"
-                    />
-                    {/* Mirror the overlay to match the mirrored feed so the
-                        skeleton tracks the body instead of its reflection.
-                        object-cover crops the canvas bitmap exactly like the
-                        video, so the skeleton stays aligned at any container
-                        aspect ratio (portrait on phones, 16:9 on desktop). */}
-                    <canvas
-                      ref={canvasRef}
-                      className="absolute top-0 left-0 w-full h-full object-cover -scale-x-100"
-                    />
-
-                    {/* HUD corner frame (decorative) */}
-                    <div className="pointer-events-none absolute inset-2 sm:inset-3">
-                      <span className="absolute left-0 top-0 h-4 w-4 rounded-tl-lg border-l-2 border-t-2 border-fitness-green/60 sm:h-6 sm:w-6" />
-                      <span className="absolute right-0 top-0 h-4 w-4 rounded-tr-lg border-r-2 border-t-2 border-fitness-green/60 sm:h-6 sm:w-6" />
-                      <span className="absolute bottom-0 left-0 h-4 w-4 rounded-bl-lg border-b-2 border-l-2 border-fitness-green/60 sm:h-6 sm:w-6" />
-                      <span className="absolute bottom-0 right-0 h-4 w-4 rounded-br-lg border-b-2 border-r-2 border-fitness-green/60 sm:h-6 sm:w-6" />
-                    </div>
-
-                    {/* LIVE indicator */}
-                    <div className="absolute left-2 top-2 flex items-center gap-1.5 rounded-md border border-white/10 bg-fitness-black/70 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-white backdrop-blur sm:left-4 sm:top-4 sm:gap-2 sm:rounded-lg sm:px-2.5 sm:py-1 sm:text-xs">
-                      <span className="relative flex h-1.5 w-1.5 sm:h-2 sm:w-2">
-                        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-fitness-error opacity-75" />
-                        <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-fitness-error sm:h-2 sm:w-2" />
-                      </span>
-                      Live
-                    </div>
-
-                    {/* Form feedback */}
-                    {isGoodForm !== null && (
-                      <div className={`absolute right-2 top-2 flex items-center gap-1 rounded-md border px-2 py-0.5 text-[10px] font-semibold backdrop-blur sm:right-4 sm:top-4 sm:gap-2 sm:rounded-lg sm:px-3 sm:py-1.5 sm:text-sm ${
-                          isGoodForm
-                            ? 'border-fitness-success/40 bg-fitness-success/15 text-fitness-success'
-                            : 'border-fitness-error/40 bg-fitness-error/15 text-fitness-error'
-                        }`}
-                      >
-                        {isGoodForm ? (
-                          <>
-                            <CheckCircle2 className="h-3 w-3 sm:h-4 sm:w-4" />
-                            Good Form
-                          </>
-                        ) : (
-                          <>
-                            <XCircle className="h-3 w-3 sm:h-4 sm:w-4" />
-                            Adjust Form
-                          </>
-                        )}
-                      </div>
-                    )}
-
-                    {/* Rep counter HUD */}
-                    <div className="absolute bottom-2 left-2 rounded-lg border border-white/10 bg-fitness-black/80 px-2.5 py-1.5 backdrop-blur sm:bottom-4 sm:left-4 sm:rounded-xl sm:px-4 sm:py-2.5">
-                      <div className="text-2xl font-extrabold leading-none text-fitness-green tabular-nums sm:text-4xl">
-                        {repCount}
-                      </div>
-                      <div className="mt-0.5 text-[9px] font-semibold uppercase tracking-widest text-fitness-gray sm:mt-1 sm:text-[10px]">
-                        Reps · {selectedWorkout.name}
-                      </div>
-                    </div>
-                    
-                    {/* Instructions overlay */}
-                    {showInstructions && (
-                      <div className="absolute inset-0 flex flex-col items-center justify-center overflow-y-auto bg-black/75 p-3 text-center sm:p-6">
-                        <div className="w-full max-w-md py-2">
-                          <h3 className="mb-2 text-base font-bold sm:mb-4 sm:text-xl">
-                            {selectedWorkout.name}
-                          </h3>
-                          <ul className="mx-auto mb-4 space-y-1.5 text-left text-xs sm:mb-6 sm:space-y-2 sm:text-sm">
-                            {selectedWorkout.instructions.map((instruction, i) => (
-                              <li key={i} className="flex items-start">
-                                <div className="mr-2 mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-fitness-green text-[10px] text-black sm:h-5 sm:w-5 sm:text-xs">
-                                  {i + 1}
-                                </div>
-                                <span>{instruction}</span>
-                              </li>
-                            ))}
-                          </ul>
-                          <Button
-                            size="sm"
-                            className="bg-fitness-green text-black hover:bg-fitness-green/80 sm:h-10 sm:px-4"
-                            onClick={() => setShowInstructions(false)}
-                          >
-                            Start Exercise
-                          </Button>
-                        </div>
-                      </div>
-                    )}
-                  </>
-                ) : (
-                  <div className="absolute inset-0 flex items-center justify-center flex-col">
-                    {isModelLoading ? (
-                      <>
-                        <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-fitness-green mb-4"></div>
-                        <p className="text-fitness-gray">Loading AI model...</p>
-                      </>
-                    ) : (
-                      <>
-                        <Camera className="h-12 w-12 text-fitness-gray mb-4" />
-                        <p className="text-fitness-gray mb-4">Ready to start your workout</p>
-                        <Button 
-                          className="bg-fitness-green text-black hover:bg-fitness-green/80"
-                          onClick={startWebcam}
-                          disabled={isModelLoading}
-                        >
-                          <Play className="h-4 w-4 mr-2" />
-                          Start Camera
-                        </Button>
-                      </>
-                    )}
-                  </div>
-                )}
-              </div>
-
-              {/* Coaching bar — below the video on phones (overlay is hidden there) */}
-              {isWebcamActive && !showInstructions && (
-                <div
-                  className={`mt-3 flex items-center gap-2 rounded-lg border px-3 py-2 text-sm sm:hidden ${
-                    coach.tone === 'good'
-                      ? 'border-fitness-success/40 bg-fitness-success/10 text-fitness-success'
-                      : coach.tone === 'warn'
-                      ? 'border-fitness-error/40 bg-fitness-error/10 text-white'
-                      : 'border-white/10 bg-white/[0.03] text-fitness-gray'
-                  }`}
-                >
-                  {coach.tone === 'good' ? (
-                    <CheckCircle2 className="h-4 w-4 shrink-0" />
-                  ) : coach.tone === 'warn' ? (
-                    <AlertTriangle className="h-4 w-4 shrink-0 text-fitness-error" />
-                  ) : (
-                    <Info className="h-4 w-4 shrink-0" />
-                  )}
-                  <span>{coach.text}</span>
-                </div>
-              )}
-
-              {/* Controls */}
-              <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <div className="flex flex-wrap items-center gap-2">
-                  {isWebcamActive ? (
-                    <>
-                      <Button 
-                        onClick={stopWebcam}
-                        variant="destructive"
-                      >
-                        Stop
-                      </Button>
-                      <Button 
-                        onClick={togglePause}
-                        variant="outline"
-                      >
-                        {isPaused ? <Play className="h-4 w-4" /> : <Pause className="h-4 w-4" />}
-                      </Button>
-                      <Button
-                        onClick={resetWorkout}
-                        variant="outline"
-                      >
-                        <RefreshCw className="h-4 w-4" />
-                      </Button>
-                      <Button
-                        onClick={captureSnapshot}
-                        variant="outline"
-                        className="border-fitness-green/40 text-fitness-green hover:bg-fitness-green/10"
-                        title="Capture snapshot"
-                      >
-                        <Aperture className="h-4 w-4 mr-2" />
-                        Capture
-                      </Button>
-                    </>
-                  ) : (
-                    <Button 
-                      className="bg-fitness-green text-black hover:bg-fitness-green/80"
-                      onClick={startWebcam}
-                      disabled={isModelLoading}
-                    >
-                      <Play className="h-4 w-4 mr-2" />
-                      Start
-                    </Button>
-                  )}
-                </div>
-                
-                <Select
-                  value={selectedWorkout.id}
-                  onValueChange={(value) => {
-                    const workout = WORKOUTS.find(w => w.id === value);
-                    if (workout) {
-                      setSelectedWorkout(workout);
-                      resetWorkout();
-                      setShowInstructions(true);
-                    }
-                  }}
-                >
-                  <SelectTrigger className="w-full bg-fitness-dark-gray border-fitness-dark-gray sm:w-[180px]">
-                    <SelectValue placeholder="Select exercise" />
-                  </SelectTrigger>
-                  <SelectContent className="bg-fitness-card-bg border-fitness-dark-gray">
-                    {WORKOUTS.map((workout) => (
-                      <SelectItem key={workout.id} value={workout.id}>
-                        {workout.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-          </div>
-
-          {/* Workout details and instructions */}
-          <div className="space-y-4">
-            <div className="bg-fitness-card-bg rounded-xl p-6">
-              <div className="flex items-center justify-between mb-4">
-                <h2 className="text-lg font-semibold">{selectedWorkout.name}</h2>
-                <div className="px-2 py-1 bg-fitness-green/20 text-fitness-green rounded text-xs">
-                  {selectedWorkout.level}
-                </div>
-              </div>
-              
-              <p className="text-fitness-gray text-sm mb-4">
-                {selectedWorkout.description}
-              </p>
-              
-              <div className="space-y-4">
-                <div>
-                  <h3 className="text-sm font-medium mb-2">Target Muscles</h3>
-                  <div className="flex flex-wrap gap-2">
-                    {selectedWorkout.targetMuscles.map((muscle, index) => (
-                      <div 
-                        key={index} 
-                        className="px-3 py-1 bg-fitness-dark-gray rounded-full text-xs"
-                      >
-                        {muscle}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-                
-                <div>
-                  <h3 className="text-sm font-medium mb-2">Recommended</h3>
-                  <div className="flex items-center text-fitness-gray">
-                    <div className="flex-1">
-                      <div className="text-sm font-medium">Reps</div>
-                      <div className="text-xs">{selectedWorkout.recommendedReps}</div>
-                    </div>
-                    <Separator orientation="vertical" className="h-8 bg-fitness-dark-gray" />
-                    <div className="flex-1 pl-4">
-                      <div className="text-sm font-medium">Sets</div>
-                      <div className="text-xs">3-4</div>
-                    </div>
-                  </div>
-                </div>
-                
-                <Separator className="bg-fitness-dark-gray" />
-                
-                <div>
-                  <h3 className="text-sm font-medium mb-3">How to do it right</h3>
-                  <ul className="space-y-2 text-sm">
-                    {selectedWorkout.instructions.map((instruction, i) => (
-                      <li key={i} className="flex items-start text-fitness-gray">
-                        <div className="h-5 w-5 rounded-full bg-fitness-green/20 text-fitness-green flex items-center justify-center text-xs mr-2 mt-0.5">
-                          {i+1}
-                        </div>
-                        {instruction}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-
-                {/* Primary form cue — the one thing to focus on */}
-                <div className="rounded-lg border border-fitness-green/25 bg-fitness-green/10 p-3">
-                  <div className="flex items-start gap-2">
-                    <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-fitness-green" />
-                    <div>
-                      <h3 className="text-sm font-medium text-fitness-green">Form focus</h3>
-                      <p className="mt-1 text-sm text-fitness-gray">
-                        {getCoaching(selectedWorkout.id).cue}
-                      </p>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Common mistakes to avoid */}
-                <div>
-                  <h3 className="mb-3 text-sm font-medium">Avoid these mistakes</h3>
-                  <ul className="space-y-2 text-sm">
-                    {getCoaching(selectedWorkout.id).mistakes.map((m, i) => (
-                      <li key={i} className="flex items-start text-fitness-gray">
-                        <XCircle className="mr-2 mt-0.5 h-4 w-4 shrink-0 text-fitness-error" />
-                        {m}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-
-                <div>
-                  <h3 className="text-sm font-medium mb-3">Tutorial Video</h3>
-                  <div className="aspect-video bg-fitness-dark-gray rounded-lg overflow-hidden">
-                    <iframe
-                      src={selectedWorkout.videoUrl}
-                      className="w-full h-full"
-                      title={`${selectedWorkout.name} tutorial`}
-                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                      allowFullScreen
-                    ></iframe>
-                  </div>
-                </div>
-              </div>
-            </div>
-            
-            <div className="bg-fitness-card-bg rounded-xl p-6">
-              <div className="flex items-center space-x-4">
-                <div className="h-10 w-10 rounded-full bg-fitness-green/20 flex items-center justify-center">
-                  <AlertTriangle className="h-5 w-5 text-fitness-green" />
-                </div>
-                <div>
-                  <h3 className="font-medium">Form Tips</h3>
-                  <p className="text-sm text-fitness-gray mt-1">
-                    Maintain proper form to prevent injuries and maximize results.
-                  </p>
-                </div>
-              </div>
-              
-              <div className="flex mt-4">
-                <Button 
-                  variant="outline" 
-                  className="border-fitness-dark-gray w-full"
-                  onClick={() => setShowInstructions(true)}
-                >
-                  <Video className="h-4 w-4 mr-2" />
-                  Show Instructions
-                </Button>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Workout navigation and history */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          <div className="bg-fitness-card-bg rounded-xl p-6">
-            <h2 className="text-lg font-semibold mb-4">Workout Navigation</h2>
-            <div className="flex items-center justify-between gap-2">
+          {!isWebcamActive && (
+            <div className="flex flex-wrap gap-2">
               <Button
                 variant="outline"
-                className="border-fitness-dark-gray px-3"
-                onClick={() => {
-                  const currentIndex = WORKOUTS.findIndex(w => w.id === selectedWorkout.id);
-                  const prevIndex = (currentIndex - 1 + WORKOUTS.length) % WORKOUTS.length;
-                  setSelectedWorkout(WORKOUTS[prevIndex]);
-                  resetWorkout();
-                  setShowInstructions(true);
-                }}
+                className={strictForm ? "border-fitness-green/50 text-fitness-green" : "border-fitness-dark-gray"}
+                onClick={() => setStrictForm((v) => !v)}
+                title="Strict form: only count reps performed with good form"
               >
-                <ChevronLeft className="h-4 w-4 sm:mr-2" />
-                <span className="hidden sm:inline">Previous</span>
+                <CheckCircle2 className="mr-2 h-4 w-4" />
+                Strict form: {strictForm ? "On" : "Off"}
               </Button>
-
-              <span className="text-center text-xs text-fitness-gray sm:text-sm">
-                Exercise {WORKOUTS.findIndex(w => w.id === selectedWorkout.id) + 1} of {WORKOUTS.length}
-              </span>
-
               <Button
                 variant="outline"
-                className="border-fitness-dark-gray px-3"
-                onClick={() => {
-                  const currentIndex = WORKOUTS.findIndex(w => w.id === selectedWorkout.id);
-                  const nextIndex = (currentIndex + 1) % WORKOUTS.length;
-                  setSelectedWorkout(WORKOUTS[nextIndex]);
-                  resetWorkout();
-                  setShowInstructions(true);
-                }}
+                className="border-fitness-dark-gray"
+                onClick={() => setIsSoundEnabled(!isSoundEnabled)}
               >
-                <span className="hidden sm:inline">Next</span>
-                <ChevronRight className="h-4 w-4 sm:ml-2" />
+                {isSoundEnabled ? <Volume2 className="h-4 w-4" /> : <VolumeX className="h-4 w-4" />}
               </Button>
             </div>
-          </div>
-          
-          <div className="bg-fitness-card-bg rounded-xl p-4 sm:p-6">
-            <h2 className="text-base font-semibold mb-3 sm:text-lg sm:mb-4">Session Summary</h2>
-            <div className="grid grid-cols-3 gap-2 text-center sm:gap-4">
-              <div className="bg-fitness-dark-gray p-2 rounded-lg sm:p-3">
-                <div className="text-xl font-bold tabular-nums sm:text-2xl">{repCount}</div>
-                <div className="text-[10px] text-fitness-gray sm:text-xs">Total Reps</div>
-              </div>
-              <div className="bg-fitness-dark-gray p-2 rounded-lg sm:p-3">
-                <div className="text-xl font-bold tabular-nums sm:text-2xl">1</div>
-                <div className="text-[10px] text-fitness-gray sm:text-xs">Exercises</div>
-              </div>
-              <div className="bg-fitness-dark-gray p-2 rounded-lg sm:p-3">
-                <div className="text-xl font-bold tabular-nums sm:text-2xl">{formatElapsed(elapsedSec)}</div>
-                <div className="text-[10px] text-fitness-gray sm:text-xs">Time</div>
-              </div>
-            </div>
-            <div className="mt-4">
-              <Button className="w-full bg-fitness-green hover:bg-fitness-green/80 text-black">
-                Complete Workout
-              </Button>
-            </div>
-          </div>
+          )}
         </div>
+
+        {isWebcamActive ? (
+          <ImmersiveStage
+            webcamRef={webcamRef}
+            canvasRef={canvasRef}
+            videoConstraints={videoConstraints}
+            workout={selectedWorkout}
+            showInstructions={showInstructions}
+            onStartExercise={() => setShowInstructions(false)}
+            detailsOpen={detailsOpen}
+            onOpenDetails={() => setDetailsOpen(true)}
+            onCloseDetails={() => setDetailsOpen(false)}
+            repCount={repCount}
+            elapsedLabel={formatElapsed(elapsedSec)}
+            isGoodForm={isGoodForm}
+            coachText={coach.text}
+            coachTone={coach.tone}
+            romProgress={rom}
+            isPaused={isPaused}
+            isSoundEnabled={isSoundEnabled}
+            onPause={togglePause}
+            onReset={resetWorkout}
+            onCapture={captureSnapshot}
+            onToggleSound={() => setIsSoundEnabled((v) => !v)}
+            onExit={stopWebcam}
+          />
+        ) : (
+          <SetupScreen
+            selectedWorkout={selectedWorkout}
+            onSelectWorkout={(id) => {
+              const w = WORKOUTS.find((x) => x.id === id);
+              if (w) {
+                setSelectedWorkout(w);
+                resetWorkout();
+                setShowInstructions(true);
+              }
+            }}
+            onStart={startWebcam}
+            isModelLoading={isModelLoading}
+          />
+        )}
       </div>
 
       {/* Webcam permission dialog */}
@@ -1239,6 +842,15 @@ const LiveWorkoutTracker = () => {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <SessionSummaryDialog
+        open={summary.open}
+        exerciseName={summary.exerciseName}
+        reps={summary.reps}
+        durationLabel={summary.durationLabel}
+        goodFormPct={summary.goodFormPct}
+        onClose={() => setSummary((s) => ({ ...s, open: false }))}
+      />
     </DashboardLayout>
   );
 };
