@@ -427,6 +427,9 @@ const LiveWorkoutTracker = () => {
   const [detector, setDetector] = useState<poseDetection.PoseDetector | null>(null);
   const [selectedWorkout, setSelectedWorkout] = useState(WORKOUTS[0]);
   const [repCount, setRepCount] = useState(0);
+  // Accumulated active workout time in seconds. Ticks only while the webcam is
+  // running and the session isn't paused, so pauses don't inflate the total.
+  const [elapsedSec, setElapsedSec] = useState(0);
   const [isGoodForm, setIsGoodForm] = useState<boolean | null>(null);
   const [isPaused, setIsPaused] = useState(false);
   const [isSoundEnabled, setIsSoundEnabled] = useState(true);
@@ -437,6 +440,23 @@ const LiveWorkoutTracker = () => {
   const [strictForm, setStrictForm] = useState(false);
   const strictFormRef = useRef(false);
   useEffect(() => { strictFormRef.current = strictForm; }, [strictForm]);
+
+  // Drive the session timer. Run a 1s interval only while actively working out
+  // (camera on, not paused, past the instructions overlay) so the displayed
+  // time reflects real training time and freezes on pause.
+  useEffect(() => {
+    const running = isWebcamActive && !isPaused && !showInstructions;
+    if (!running) return;
+    const id = window.setInterval(() => setElapsedSec((s) => s + 1), 1000);
+    return () => window.clearInterval(id);
+  }, [isWebcamActive, isPaused, showInstructions]);
+
+  // Format seconds as m:ss (e.g. 75 -> "1:15").
+  const formatElapsed = (totalSec: number) => {
+    const m = Math.floor(totalSec / 60);
+    const s = totalSec % 60;
+    return `${m}:${s.toString().padStart(2, "0")}`;
+  };
   const requestAnimationRef = useRef<number | null>(null);
 
   // Speed-adaptive smoother for the drawn skeleton + geometry, so the overlay
@@ -743,6 +763,7 @@ const LiveWorkoutTracker = () => {
   // Reset workout
   const resetWorkout = () => {
     setRepCount(0);
+    setElapsedSec(0);
     setIsGoodForm(null);
     // Reset counter + timers. On an exercise switch selectedWorkout is still the
     // previous value here; the effect below rebuilds the spec once it updates.
@@ -1523,20 +1544,20 @@ const LiveWorkoutTracker = () => {
             </div>
           </div>
           
-          <div className="bg-fitness-card-bg rounded-xl p-6">
-            <h2 className="text-lg font-semibold mb-4">Session Summary</h2>
-            <div className="grid grid-cols-3 gap-4 text-center">
-              <div className="bg-fitness-dark-gray p-3 rounded-lg">
-                <div className="text-2xl font-bold">{repCount}</div>
-                <div className="text-xs text-fitness-gray">Total Reps</div>
+          <div className="bg-fitness-card-bg rounded-xl p-4 sm:p-6">
+            <h2 className="text-base font-semibold mb-3 sm:text-lg sm:mb-4">Session Summary</h2>
+            <div className="grid grid-cols-3 gap-2 text-center sm:gap-4">
+              <div className="bg-fitness-dark-gray p-2 rounded-lg sm:p-3">
+                <div className="text-xl font-bold tabular-nums sm:text-2xl">{repCount}</div>
+                <div className="text-[10px] text-fitness-gray sm:text-xs">Total Reps</div>
               </div>
-              <div className="bg-fitness-dark-gray p-3 rounded-lg">
-                <div className="text-2xl font-bold">1</div>
-                <div className="text-xs text-fitness-gray">Exercises</div>
+              <div className="bg-fitness-dark-gray p-2 rounded-lg sm:p-3">
+                <div className="text-xl font-bold tabular-nums sm:text-2xl">1</div>
+                <div className="text-[10px] text-fitness-gray sm:text-xs">Exercises</div>
               </div>
-              <div className="bg-fitness-dark-gray p-3 rounded-lg">
-                <div className="text-2xl font-bold">0:00</div>
-                <div className="text-xs text-fitness-gray">Time</div>
+              <div className="bg-fitness-dark-gray p-2 rounded-lg sm:p-3">
+                <div className="text-xl font-bold tabular-nums sm:text-2xl">{formatElapsed(elapsedSec)}</div>
+                <div className="text-[10px] text-fitness-gray sm:text-xs">Time</div>
               </div>
             </div>
             <div className="mt-4">
