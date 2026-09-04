@@ -507,35 +507,73 @@ const LiveWorkoutTracker = () => {
 
   // Load TensorFlow.js and pose detector
   useEffect(() => {
+    let isCancelled = false;
+
     const loadModels = async () => {
       try {
+        setIsModelLoading(true);
         // Prefer the GPU (WebGL) backend; fall back silently to whatever
-        // tf.ready() selects (CPU/WASM) on devices without WebGL. The WebGL
-        // backend ships inside the @tensorflow/tfjs union package we import.
+        // tf.ready() selects (CPU/WASM) on devices without WebGL.
         await tf.setBackend("webgl").catch(() => undefined);
         await tf.ready();
 
-        // MoveNet Lightning: fast (>50 FPS), so the tracker feels responsive on
-        // any machine. enableSmoothing applies MoveNet's built-in temporal
-        // filter; we additionally run a speed-adaptive One-Euro filter
-        // (KeypointSmoother) on the keypoints, which is what actually steadies
-        // the drawn skeleton, plus the rep-signal EMA and the form debounce.
-        const detectorConfig = {
-          modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING,
-          enableSmoothing: true,
-          minPoseScore: 0.25,
-        };
+        let detector: poseDetection.PoseDetector | null = null;
 
-        const detector = await poseDetection.createDetector(
-          poseDetection.SupportedModels.MoveNet,
-          detectorConfig
-        );
+        // 1. Primary: load locally bundled MoveNet Lightning model (offline, fast, no external network calls)
+        try {
+          const localUrl = `${window.location.origin}/models/movenet/model.json`;
+          detector = await poseDetection.createDetector(
+            poseDetection.SupportedModels.MoveNet,
+            {
+              modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING,
+              modelUrl: localUrl,
+              enableSmoothing: true,
+              minPoseScore: 0.25,
+            }
+          );
+        } catch (localErr) {
+          console.warn("Could not load local MoveNet model, attempting fallback...", localErr);
+        }
+
+        // 2. Fallback: default TFHub MoveNet model
+        if (!detector) {
+          try {
+            detector = await poseDetection.createDetector(
+              poseDetection.SupportedModels.MoveNet,
+              {
+                modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING,
+                enableSmoothing: true,
+                minPoseScore: 0.25,
+              }
+            );
+          } catch (onlineErr) {
+            console.warn("TFHub MoveNet failed, falling back to PoseNet MobileNet...", onlineErr);
+          }
+        }
+
+        // 3. Fallback: PoseNet MobileNetV1
+        if (!detector) {
+          detector = await poseDetection.createDetector(
+            poseDetection.SupportedModels.PoseNet,
+            {
+              quantBytes: 2,
+              architecture: "MobileNetV1",
+              outputStride: 16,
+              inputResolution: { width: 257, height: 257 },
+              multiplier: 0.5,
+            }
+          );
+        }
+
+        if (isCancelled) {
+          detector?.dispose();
+          return;
+        }
 
         // Warm up: run one inference so the first real frame doesn't pay the
-        // shader-compile / kernel-init cost mid-workout. A tensor input has no
-        // currentTime, so pass an explicit timestamp for the smoothing filter.
+        // shader-compile / kernel-init cost mid-workout.
         try {
-          const warm = tf.zeros([256, 256, 3]) as tf.Tensor3D;
+          const warm = tf.zeros([192, 192, 3]) as tf.Tensor3D;
           await detector.estimatePoses(warm, undefined, performance.now());
           warm.dispose();
         } catch {
@@ -551,18 +589,21 @@ const LiveWorkoutTracker = () => {
         });
       } catch (error) {
         console.error("Error loading models:", error);
-        toast({
-          title: "Error loading AI model",
-          description: "There was a problem loading the pose detection model. Please refresh the page.",
-          variant: "destructive",
-        });
+        if (!isCancelled) {
+          setIsModelLoading(false);
+          toast({
+            title: "Error loading AI model",
+            description: "There was a problem loading the pose detection model. Please refresh the page.",
+            variant: "destructive",
+          });
+        }
       }
     };
 
     loadModels();
     
     return () => {
-      // Clean up
+      isCancelled = true;
       if (requestAnimationRef.current) {
         cancelAnimationFrame(requestAnimationRef.current);
       }
